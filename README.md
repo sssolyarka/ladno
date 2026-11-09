@@ -4,7 +4,7 @@
 
 ## Установщики
 
-Готовые `.rpm` (Fedora), `.exe` (Windows 10/11 x64) и `.apk` (Android) публикуются в [Releases](https://github.com/sssolyarka/ladno/releases) после успешной сборки. [Как установить и выпустить обновление](docs/RELEASES.md). Состояние конкретного выпуска смотрите в Releases и Actions.
+Готовые установщики **v0.1.0 уже опубликованы**: [Fedora RPM](https://github.com/sssolyarka/ladno/releases/download/v0.1.0/ladno-0.1.0-fedora-x86_64.rpm), [Windows 10/11 Setup](https://github.com/sssolyarka/ladno/releases/download/v0.1.0/ladno-0.1.0-windows-x64-setup.exe), [Android APK](https://github.com/sssolyarka/ladno/releases/download/v0.1.0/ladno-0.1.0-android.apk). [Все файлы и контрольные суммы](https://github.com/sssolyarka/ladno/releases/tag/v0.1.0). [Как установить и выпустить обновление](docs/RELEASES.md). Состояние конкретного выпуска смотрите в Releases и Actions.
 
 ## Что уже работает
 
