@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Ладно
+Comment=Личные заметки без облака
+Exec=/opt/ladno/ladno
+Icon=ladno
+Terminal=false
+Categories=Office;Utility;
+StartupWMClass=ru.ladno.ladno

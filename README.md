@@ -2,6 +2,10 @@
 
 Личное приложение на русском для Fedora Linux, **Windows 10 x64** и Android. Общая кодовая база Flutter/Dart. Это **первый рабочий этап**, а не готовая замена SingularityApp.
 
+## Установщики
+
+Готовые `.rpm` (Fedora), `.exe` (Windows 10/11 x64) и `.apk` (Android) публикуются в [Releases](https://github.com/sssolyarka/ladno/releases) после успешной сборки. [Как установить и выпустить обновление](docs/RELEASES.md). Состояние конкретного выпуска смотрите в Releases и Actions.
+
 ## Что уже работает
 
 - Локальные заметки в SQLite, сохранение каждого изменения, поиск по заголовкам и тексту с русским регистром.
@@ -61,7 +65,7 @@ flutter build windows --release
 .\build\windows\x64\runner\Release\ladno.exe
 ```
 
-Скопируйте **весь каталог Release** в выбранную папку и создайте ярлык на `ladno.exe`. На чистой системе может потребоваться Microsoft Visual C++ Redistributable x64. Инсталлятор/MSIX, подпись и автообновление пока не подготовлены. На Fedora Windows-бинарник не собирается; проверку на реальной Windows 10 ещё необходимо провести.
+Скопируйте **весь каталог Release** в выбранную папку и создайте ярлык на `ladno.exe`. На чистой системе может потребоваться Microsoft Visual C++ Redistributable x64. Сценарий EXE-установщика находится в packaging/windows; MSIX, Authenticode-подпись и автообновление пока не подготовлены. На Fedora Windows-бинарник не собирается; проверку на реальной Windows 10 ещё необходимо провести.
 
 ## Android
 
@@ -75,7 +79,7 @@ flutter run -d DEVICE_ID
 flutter build apk --debug
 ```
 
-APK: `build/app/outputs/flutter-apk/app-debug.apk`. Установите на собственный телефон (разрешив установку из выбранного источника) или через `adb install -r build/app/outputs/flutter-apk/app-debug.apk`. Это отладочная сборка; она не подходит для публикации. Для выпуска нужен собственный keystore и настройка release signing по [документации](https://docs.flutter.dev/deployment/android). Шаблон Flutter использует debug signing даже для release, пока это не изменено: не распространяйте такой release как подписанный продукт.
+APK: `build/app/outputs/flutter-apk/app-debug.apk`. Установите на собственный телефон (разрешив установку из выбранного источника) или через `adb install -r build/app/outputs/flutter-apk/app-debug.apk`. Это отладочная сборка; она не подходит для публикации. Для выпуска нужен собственный keystore и настройка release signing по [документации](https://docs.flutter.dev/deployment/android). Release-сборка требует постоянного ключа и android/key.properties; без них она намеренно прекращается. GitHub Actions восстанавливает ключ из Secrets.
 
 Минимальную версию Android задаёт установленный Flutter в `android/app/build.gradle.kts`; актуальная ветка требует Android API 24+. Не удаляйте приложение без экспорта: Android удалит его локальные данные. Системное облачное резервирование отключено через `android:allowBackup="false"`.
 
