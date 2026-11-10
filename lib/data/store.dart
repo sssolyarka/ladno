@@ -599,6 +599,11 @@ class Store {
           final object = (await local.read(id))!;
           if (object.kind == 'note') journalNotes.add(id);
         }
+        if (journalNotes.length != data['notes']!.length) {
+          throw const FormatException(
+            'Список заметок не совпадает с журналом.',
+          );
+        }
         for (final note in data['notes']!) {
           if (!journalNotes.contains(note['id'])) {
             throw const FormatException('Заметка отсутствует в журнале.');

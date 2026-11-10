@@ -173,6 +173,29 @@ void main() {
     },
   );
 
+  test(
+    'Несовпадение списка и журнала откатывает восстановление и идентификатор',
+    () async {
+      final note = await a.createNote();
+      note.body = 'Сохранить';
+      await a.save(note);
+      final device = a.replica.deviceId;
+      final count = await a.replica.operationCount();
+      final envelope = jsonDecode(await a.backup()) as Map<String, dynamic>;
+      final content =
+          jsonDecode(envelope['payload'] as String) as Map<String, dynamic>;
+      content['notes'] = [];
+      content['revisions'] = [];
+      final payload = jsonEncode(content);
+      envelope['payload'] = payload;
+      envelope['sha256'] = sha256.convert(utf8.encode(payload)).toString();
+      await expectLater(a.restore(jsonEncode(envelope)), throwsFormatException);
+      expect(a.replica.deviceId, device);
+      expect(await a.replica.operationCount(), count);
+      expect((await a.notes()).single.body, 'Сохранить');
+    },
+  );
+
   test('Копия v1 импортируется в новый журнал без переноса настроек', () async {
     final note = await a.createNote();
     note.body = 'Старая копия';
