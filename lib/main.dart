@@ -13,6 +13,7 @@ import 'package:sqflite/sqflite.dart' as mobile;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'data/store.dart';
+import 'widgets/conflict_dialog.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -226,6 +227,11 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         setState(() {
           notes = list;
           folders = fs;
+          for (final note in list) {
+            if (note.id == selected?.id) {
+              selected!.hasConflict = note.hasConflict;
+            }
+          }
         });
       }
     } catch (_) {
@@ -241,7 +247,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     dirty = true;
     setState(() => status = 'Сохранение…');
     // Capture every edit before yielding: changing selection cannot redirect it.
-    final snapshot = Note.fromMap(n.toMap());
+    final snapshot = n.snapshot();
     writes = writes.then((_) async {
       try {
         await store.save(snapshot);
@@ -330,7 +336,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   Future<void> mutate(void Function(Note) change) async {
     if (!await safeFlush() || selected == null) return;
     final n = selected!;
-    final before = Note.fromMap(n.toMap());
+    final before = n.snapshot();
     change(n);
     try {
       await store.save(n);
@@ -488,6 +494,44 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       selection: TextSelection.collapsed(offset: end + left.length),
     );
     changed();
+  }
+
+  Future<void> resolveConflict() async {
+    if (!await safeFlush() || selected == null) return;
+    final id = selected!.id;
+    try {
+      final version = await store.replica.read(id);
+      if (!mounted || version == null) return;
+      if (!version.hasConflict) {
+        await reload();
+        return;
+      }
+      final result = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => ConflictDialog(
+          version: version,
+          folders: {
+            for (final f in folders) f['id'] as String: f['name'] as String,
+          },
+        ),
+      );
+      if (result == null) return;
+      await store.resolveConflict(version, result);
+      final all = [...await store.notes(), ...await store.notes(trash: true)];
+      final fresh = all.where((n) => n.id == id).first;
+      if (!mounted) return;
+      setState(() {
+        selected = fresh;
+        title.text = fresh.title;
+        body.text = fresh.body;
+        section = fresh.deleted ? 'Корзина' : 'Заметки';
+        folderId = null;
+        status = 'Сохранено локально';
+      });
+      await reload();
+    } catch (_) {
+      message('Не удалось сохранить объединение. Версии не удалены.');
+    }
   }
 
   Future<void> history() async {
@@ -813,6 +857,11 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ),
+                                if (n.hasConflict)
+                                  const Tooltip(
+                                    message: 'Есть разные версии',
+                                    child: Icon(Icons.merge_type, size: 18),
+                                  ),
                                 if (n.pinned)
                                   Icon(
                                     Icons.push_pin,
@@ -966,6 +1015,23 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
             ),
           ),
           const Divider(height: 1),
+          if (n.hasConflict)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Есть изменения с разных устройств. Обе версии сохранены.',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => unawaited(resolveConflict()),
+                    child: const Text('Сравнить'),
+                  ),
+                ],
+              ),
+            ),
           if (trash)
             const Padding(
               padding: EdgeInsets.all(12),
@@ -985,6 +1051,12 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
               ),
               items: [
                 const DropdownMenuItem(value: '', child: Text('Без папки')),
+                if (n.folderId != null &&
+                    !folders.any((f) => f['id'] == n.folderId))
+                  DropdownMenuItem(
+                    value: n.folderId,
+                    child: const Text('Папка недоступна'),
+                  ),
                 for (final f in folders)
                   DropdownMenuItem(
                     value: f['id'] as String,

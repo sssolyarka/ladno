@@ -6,6 +6,9 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_common/sqlite_api.dart';
 import 'package:uuid/uuid.dart';
 
+import '../sync/replica.dart';
+import '../sync/operation.dart';
+
 const _uuid = Uuid();
 
 class Note {
@@ -13,7 +16,24 @@ class Note {
   String title, body;
   String? folderId;
   bool pinned, deleted;
+  bool hasConflict = false;
   int updated, revision;
+  _EditVersion? _edit;
+
+  Note snapshot() {
+    final copy = Note.fromMap(toMap());
+    copy._edit = _edit;
+    copy.hasConflict = hasConflict;
+    return copy;
+  }
+
+  Map<String, Object?> get _fields => {
+    'title': title,
+    'body': body,
+    'folderId': folderId,
+    'pinned': pinned,
+    'deleted': deleted,
+  };
   Note({
     required this.id,
     this.title = '',
@@ -46,11 +66,118 @@ class Note {
   };
 }
 
+class _EditVersion {
+  final String deviceId;
+  List<String> heads;
+  Map<String, Object?> fields;
+  _EditVersion(this.deviceId, this.heads, this.fields);
+}
+
 /// All database writes are atomic. File exports contain no settings or secrets.
 class Store {
   final Database db;
   final Directory root;
+  late Replica replica;
   Store._(this.db, this.root);
+
+  static Future<void> _seed(DatabaseExecutor tx) async {
+    final replica = await Replica.attach(tx, inTransaction: true);
+    for (final folder in await tx.query('folders')) {
+      await replica.change(folder['id'] as String, 'folder', {
+        'name': folder['name'],
+        'deleted': false,
+      });
+    }
+    for (final row in await tx.query('notes')) {
+      final note = Note.fromMap(row);
+      await replica.change(note.id, 'note', note._fields);
+    }
+  }
+
+  /// Rebuild the visible projection in the operation's transaction. Missing or
+  /// deleted folders stay as placeholders for foreign keys, hidden by folders().
+  static Future<void> _project(DatabaseExecutor tx) async {
+    final replica = await Replica.attach(tx, inTransaction: true);
+    final objects = <ReplicaObject>[];
+    for (final id in await replica.objectIds()) {
+      final value = await replica.read(id);
+      if (value != null) objects.add(value);
+    }
+    for (final object in objects.where((o) => o.kind == 'folder')) {
+      await tx.insert('folders', {
+        'id': object.id,
+        'name': object.fields['name'] ?? '',
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      await tx.update(
+        'folders',
+        {'name': object.fields['name'] ?? ''},
+        where: 'id = ?',
+        whereArgs: [object.id],
+      );
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final object in objects.where((o) => o.kind == 'note')) {
+      final f = object.fields;
+      final folder = f['folderId'] as String?;
+      if (folder != null) {
+        await tx.insert('folders', {
+          'id': folder,
+          'name': '',
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      final rows = await tx.query(
+        'notes',
+        where: 'id = ?',
+        whereArgs: [object.id],
+      );
+      final old = rows.isEmpty ? null : rows.single;
+      final value = Note(
+        id: object.id,
+        title: f['title'] as String? ?? '',
+        body: f['body'] as String? ?? '',
+        folderId: folder,
+        pinned: f['pinned'] == true,
+        deleted: f['deleted'] == true,
+        updated: now,
+        revision: old == null ? 1 : (old['revision'] as int) + 1,
+      ).toMap();
+      if (old != null &&
+          [
+            'title',
+            'body',
+            'folder_id',
+            'pinned',
+            'deleted',
+          ].every((key) => old[key] == value[key])) {
+        continue;
+      }
+      if (old != null &&
+          (old['title'] != value['title'] || old['body'] != value['body'])) {
+        await tx.insert('revisions', {
+          'id': _uuid.v4(),
+          'note_id': object.id,
+          'title': old['title'],
+          'body': old['body'],
+          'created': now,
+        });
+        await tx.rawDelete(
+          'DELETE FROM revisions WHERE note_id = ? AND id NOT IN (SELECT id FROM revisions WHERE note_id = ? ORDER BY created DESC, rowid DESC LIMIT 30)',
+          [object.id, object.id],
+        );
+      }
+      if (old == null) {
+        await tx.insert('notes', value);
+      } else {
+        await tx.update(
+          'notes',
+          value,
+          where: 'id = ?',
+          whereArgs: [object.id],
+        );
+      }
+    }
+  }
+
   static Future<Store> open(DatabaseFactory factory, Directory root) async {
     await root.create(recursive: true);
     final path = p.join(root.path, 'ladno.sqlite');
@@ -62,17 +189,41 @@ class Store {
       );
       final version = await probe.getVersion();
       await probe.close();
-      if (version > 1) {
+      if (version > 2) {
         throw const FormatException(
           'База создана более новой версией приложения.',
         );
       }
-      if (version < 1) await File(path).copy('$path.before-migration');
+      if (version < 2) {
+        final source = File(path);
+        final backup = File('$path.before-v2');
+        await source.copy(backup.path);
+        if (sha256.convert(await source.readAsBytes()) !=
+            sha256.convert(await backup.readAsBytes())) {
+          throw const FormatException(
+            'Не удалось проверить копию перед обновлением базы.',
+          );
+        }
+        final copied = await factory.openDatabase(
+          backup.path,
+          options: OpenDatabaseOptions(readOnly: true),
+        );
+        try {
+          final check = await copied.rawQuery('PRAGMA integrity_check');
+          if (check.length != 1 || check.single.values.single != 'ok') {
+            throw const FormatException(
+              'Копия базы повреждена. Обновление остановлено.',
+            );
+          }
+        } finally {
+          await copied.close();
+        }
+      }
     }
     final db = await factory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 2,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
           await db.rawQuery('PRAGMA journal_mode = DELETE');
@@ -94,35 +245,51 @@ class Store {
           await db.execute(
             'CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
           );
+          await Replica.createSchema(db);
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          await Replica.createSchema(db);
+          await _seed(db);
         },
       ),
     );
-    return Store._(db, root);
+    final store = Store._(db, root);
+    store.replica = await Replica.attach(db, onChanged: _project);
+    return store;
   }
 
   Future<List<Note>> notes({
     bool trash = false,
     String query = '',
     String? folderId,
-  }) async {
-    final rows = await db.query(
+  }) => db.transaction((tx) async {
+    final rows = await tx.query(
       'notes',
       where: 'deleted = ?',
       whereArgs: [trash ? 1 : 0],
       orderBy: 'pinned DESC, updated DESC, id',
     );
+    final local = await Replica.attach(tx);
     final q = query.toLowerCase();
-    return rows
-        .map(Note.fromMap)
-        .where(
-          (n) =>
-              (folderId == null || n.folderId == folderId) &&
-              (q.isEmpty ||
-                  n.title.toLowerCase().contains(q) ||
-                  n.body.toLowerCase().contains(q)),
-        )
-        .toList();
-  }
+    final result = <Note>[];
+    for (final row in rows) {
+      final n = Note.fromMap(row);
+      final object = await local.read(n.id);
+      n.hasConflict = object?.hasConflict ?? false;
+      n._edit = _EditVersion(
+        replica.deviceId,
+        object?.heads.toList() ?? [],
+        n._fields,
+      );
+      if ((folderId == null || n.folderId == folderId) &&
+          (q.isEmpty ||
+              n.title.toLowerCase().contains(q) ||
+              n.body.toLowerCase().contains(q))) {
+        result.add(n);
+      }
+    }
+    return result;
+  });
 
   Future<Note> createNote({String? folderId}) async {
     final n = Note(
@@ -130,7 +297,8 @@ class Store {
       folderId: folderId,
       updated: DateTime.now().millisecondsSinceEpoch,
     );
-    await db.insert('notes', n.toMap());
+    final op = await replica.change(n.id, 'note', n._fields);
+    n._edit = _EditVersion(replica.deviceId, [op.id], n._fields);
     return n;
   }
 
@@ -140,54 +308,73 @@ class Store {
         'Слишком длинная заметка: заголовок до 1000, текст до 1000000 символов.',
       );
     }
-    var nextRevision = note.revision + 1;
-    final now = DateTime.now().millisecondsSinceEpoch;
-    await db.transaction((tx) async {
-      final old = (await tx.query(
-        'notes',
-        where: 'id = ?',
-        whereArgs: [note.id],
-      )).single;
-      nextRevision = (old['revision'] as int) + 1;
-      if (old['title'] != note.title || old['body'] != note.body) {
-        await tx.insert('revisions', {
-          'id': _uuid.v4(),
-          'note_id': note.id,
-          'title': old['title'],
-          'body': old['body'],
-          'created': now,
-        });
-        await tx.rawDelete(
-          'DELETE FROM revisions WHERE note_id = ? AND id NOT IN (SELECT id FROM revisions WHERE note_id = ? ORDER BY created DESC, rowid DESC LIMIT 30)',
-          [note.id, note.id],
-        );
-      }
-      await tx.update(
-        'notes',
-        {...note.toMap(), 'revision': nextRevision, 'updated': now},
-        where: 'id = ?',
-        whereArgs: [note.id],
+    final edit = note._edit;
+    if (edit == null || edit.deviceId != replica.deviceId) {
+      throw const FormatException(
+        'Откройте заметку заново перед редактированием.',
       );
-    });
-    note.revision = nextRevision;
-    note.updated = now;
+    }
+    final fields = note._fields;
+    final patch = <String, Object?>{
+      for (final e in fields.entries)
+        if (edit.fields[e.key] != e.value) e.key: e.value,
+    };
+    if (patch.isNotEmpty) {
+      final op = await replica.change(
+        note.id,
+        'note',
+        patch,
+        parents: edit.heads.toList(),
+      );
+      edit.heads = [op.id];
+      edit.fields = fields;
+    }
+    final row = (await db.query(
+      'notes',
+      where: 'id = ?',
+      whereArgs: [note.id],
+    )).single;
+    note.revision = row['revision'] as int;
+    note.updated = row['updated'] as int;
   }
 
-  Future<List<Map<String, Object?>>> folders() =>
-      db.query('folders', orderBy: 'name COLLATE NOCASE');
+  Future<void> resolveConflict(
+    ReplicaObject version,
+    Map<String, Object?> fields,
+  ) async {
+    if (version.kind != 'note') throw const FormatException('Это не заметка.');
+    await replica.change(version.id, 'note', fields, parents: version.heads);
+  }
+
+  Future<List<Map<String, Object?>>> folders() async {
+    final rows = await db.query('folders', orderBy: 'name COLLATE NOCASE');
+    final active = <Map<String, Object?>>[];
+    for (final row in rows) {
+      final object = await replica.read(row['id'] as String);
+      if (object != null && object.fields['deleted'] != true) active.add(row);
+    }
+    return active;
+  }
+
   Future<void> addFolder(String name) async {
     if (name.trim().isEmpty) return;
-    await db.insert('folders', {'id': _uuid.v4(), 'name': name.trim()});
+    await replica.change(_uuid.v4(), 'folder', {
+      'name': name.trim(),
+      'deleted': false,
+    });
   }
 
   Future<void> deleteFolder(String id) => db.transaction((tx) async {
-    await tx.update(
+    final local = await Replica.attach(tx);
+    await local.change(id, 'folder', {'deleted': true});
+    for (final note in await tx.query(
       'notes',
-      {'folder_id': null},
       where: 'folder_id = ?',
       whereArgs: [id],
-    );
-    await tx.delete('folders', where: 'id = ?', whereArgs: [id]);
+    )) {
+      await local.change(note['id'] as String, 'note', {'folderId': null});
+    }
+    await _project(tx);
   });
   Future<List<Map<String, Object?>>> history(String id) => db.query(
     'revisions',
@@ -206,14 +393,31 @@ class Store {
   }
 
   Future<String> backup() => db.transaction((tx) async {
+    final attachments = await tx.query(
+      'replica_fields',
+      columns: ['value'],
+      where: 'field = ?',
+      whereArgs: ['attachments'],
+    );
+    if (attachments.any(
+      (row) => (jsonDecode(row['value'] as String) as List).isNotEmpty,
+    )) {
+      throw const FormatException(
+        'Копия с вложениями требует файлового архива. Сохраните файлы отдельно; этот формат пока недоступен.',
+      );
+    }
     final payload = jsonEncode({
       'folders': await tx.query('folders'),
       'notes': await tx.query('notes'),
       'revisions': await tx.query('revisions'),
+      'operations': (await tx.query(
+        'replica_ops',
+        orderBy: 'logical,origin,sequence',
+      )).map((r) => jsonDecode(r['document'] as String)).toList(),
     });
     final output = jsonEncode({
       'format': 'ladno-backup',
-      'version': 1,
+      'version': 2,
       'sha256': sha256.convert(utf8.encode(payload)).toString(),
       'payload': payload,
     });
@@ -233,7 +437,7 @@ class Store {
     final envelope = jsonDecode(input);
     if (envelope is! Map ||
         envelope['format'] != 'ladno-backup' ||
-        envelope['version'] != 1 ||
+        !{1, 2}.contains(envelope['version']) ||
         envelope['payload'] is! String) {
       throw const FormatException('Неподдерживаемый формат резервной копии.');
     }
@@ -307,6 +511,23 @@ class Store {
         result[table]!.add(row);
       }
     }
+    if (envelope['version'] == 2) {
+      final values = data['operations'];
+      if (values is! List || values.length > 100000) {
+        throw const FormatException('Некорректный журнал резервной копии.');
+      }
+      final ids = <String>{};
+      result['operations'] = [];
+      try {
+        for (final value in values) {
+          final op = SyncOperation.fromJson(value);
+          if (!ids.add(op.id)) throw const FormatException('Повтор операции.');
+          result['operations']!.add(op.toJson());
+        }
+      } on SyncProtocolException {
+        throw const FormatException('Повреждён журнал резервной копии.');
+      }
+    }
     final folders = result['folders']!.map((r) => r['id']).toSet();
     final notes = result['notes']!.map((r) => r['id']).toSet();
     for (final n in result['notes']!) {
@@ -330,15 +551,63 @@ class Store {
   Future<void> restore(String input) async {
     final data = validateBackup(input);
     await db.transaction((tx) async {
-      for (final table in ['revisions', 'notes', 'folders']) {
+      for (final table in [
+        'replica_receipts',
+        'replica_fields',
+        'replica_heads',
+        'replica_ops',
+        'replica_meta',
+        'revisions',
+        'notes',
+        'folders',
+      ]) {
         await tx.delete(table);
       }
+      // A restored/copy installation must never reuse an origin's counters.
+      await tx.insert('replica_meta', {'key': 'device', 'value': _uuid.v4()});
+      await tx.insert('replica_meta', {'key': 'sequence', 'value': '0'});
+      await tx.insert('replica_meta', {'key': 'logical', 'value': '0'});
       for (final table in ['folders', 'notes', 'revisions']) {
         for (final row in data[table]!) {
           await tx.insert(table, row);
         }
       }
+      if (data['operations'] == null) {
+        await _seed(tx);
+      } else {
+        final local = await Replica.attach(tx, inTransaction: true);
+        var page = <SyncOperation>[];
+        var bytes = 128;
+        for (final row in data['operations']!) {
+          final op = SyncOperation.fromJson(row);
+          final size = utf8.encode(op.encode()).length + 1;
+          if (page.length >= maxSyncBatchOperations ||
+              bytes + size > maxSyncBatchBytes) {
+            await local.receive(SyncBatch(page));
+            page = [];
+            bytes = 128;
+          }
+          page.add(op);
+          bytes += size;
+        }
+        if (page.isNotEmpty) await local.receive(SyncBatch(page));
+        // The journal is authoritative. Never present unjournaled rows as
+        // synchronized; preserve existing snapshot history without synthesizing
+        // an extra revision when its projection already matches.
+        final journalNotes = <String>{};
+        for (final id in await local.objectIds()) {
+          final object = (await local.read(id))!;
+          if (object.kind == 'note') journalNotes.add(id);
+        }
+        for (final note in data['notes']!) {
+          if (!journalNotes.contains(note['id'])) {
+            throw const FormatException('Заметка отсутствует в журнале.');
+          }
+        }
+        await _project(tx);
+      }
     });
+    replica = await Replica.attach(db, onChanged: _project);
   }
 
   Future<File> localBackup({String prefix = 'auto'}) async {

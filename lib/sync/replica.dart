@@ -7,15 +7,61 @@ import 'package:uuid/uuid.dart';
 
 import 'operation.dart';
 
-/// Stage 2 storage core. Deliberately separate from the v1 user database until
-/// the migration, editor integration and authenticated transport are complete.
+/// Causal operation journal, standalone or attached to the user transaction.
 int? _firstInt(List<Map<String, Object?>> rows) =>
     rows.isEmpty ? null : rows.first.values.first as int?;
 
 class Replica {
-  final Database db;
+  final DatabaseExecutor db;
   final String deviceId;
-  Replica._(this.db, this.deviceId);
+  final Future<void> Function(DatabaseExecutor)? onChanged;
+  final bool manageTransactions;
+  Replica._(
+    this.db,
+    this.deviceId, [
+    this.onChanged,
+    this.manageTransactions = true,
+  ]);
+
+  /// Attach to the user database or its current transaction. Never opens a
+  /// second connection, so an operation and its projection commit together.
+  static Future<Replica> attach(
+    DatabaseExecutor db, {
+    Future<void> Function(DatabaseExecutor)? onChanged,
+    bool inTransaction = false,
+  }) async {
+    final rows = await db.query(
+      'replica_meta',
+      where: 'key = ?',
+      whereArgs: ['device'],
+    );
+    return Replica._(
+      db,
+      rows.single['value'] as String,
+      onChanged,
+      !inTransaction,
+    );
+  }
+
+  Future<T> _write<T>(Future<T> Function(DatabaseExecutor) action) async {
+    Future<T> run(DatabaseExecutor tx) async {
+      final value = await action(tx);
+      await onChanged?.call(tx);
+      return value;
+    }
+
+    if (manageTransactions && db is Database) {
+      return (db as Database).transaction(run);
+    }
+    return run(db);
+  }
+
+  Future<T> _read<T>(Future<T> Function(DatabaseExecutor) action) async {
+    if (manageTransactions && db is Database) {
+      return (db as Database).transaction(action);
+    }
+    return action(db);
+  }
 
   static Future<Replica> open(
     DatabaseFactory factory,
@@ -32,30 +78,7 @@ class Replica {
           await db.rawQuery('PRAGMA journal_mode = DELETE');
         },
         onCreate: (db, version) async {
-          await db.execute(
-            'CREATE TABLE replica_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
-          );
-          await db.execute(
-            'CREATE TABLE replica_ops(id TEXT PRIMARY KEY, origin TEXT NOT NULL, sequence INTEGER NOT NULL, logical INTEGER NOT NULL, object_id TEXT NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 0, UNIQUE(origin,sequence))',
-          );
-          await db.execute(
-            'CREATE INDEX replica_pending ON replica_ops(applied,logical)',
-          );
-          await db.execute(
-            'CREATE TABLE replica_heads(object_id TEXT NOT NULL, op_id TEXT NOT NULL REFERENCES replica_ops(id), PRIMARY KEY(object_id,op_id))',
-          );
-          await db.execute(
-            'CREATE TABLE replica_fields(object_id TEXT NOT NULL, field TEXT NOT NULL, op_id TEXT NOT NULL REFERENCES replica_ops(id), value TEXT NOT NULL, PRIMARY KEY(object_id,field,op_id))',
-          );
-          await db.execute(
-            'CREATE TABLE replica_receipts(peer_id TEXT NOT NULL, op_id TEXT NOT NULL REFERENCES replica_ops(id), PRIMARY KEY(peer_id,op_id))',
-          );
-          await db.insert('replica_meta', {
-            'key': 'device',
-            'value': const Uuid().v4(),
-          });
-          await db.insert('replica_meta', {'key': 'sequence', 'value': '0'});
-          await db.insert('replica_meta', {'key': 'logical', 'value': '0'});
+          await createSchema(db);
         },
       ),
     );
@@ -67,6 +90,33 @@ class Replica {
             )).single['value']
             as String;
     return Replica._(db, id);
+  }
+
+  static Future<void> createSchema(DatabaseExecutor db) async {
+    await db.execute(
+      'CREATE TABLE replica_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    );
+    await db.execute(
+      'CREATE TABLE replica_ops(id TEXT PRIMARY KEY, origin TEXT NOT NULL, sequence INTEGER NOT NULL, logical INTEGER NOT NULL, object_id TEXT NOT NULL, kind TEXT NOT NULL, document TEXT NOT NULL, applied INTEGER NOT NULL DEFAULT 0, UNIQUE(origin,sequence))',
+    );
+    await db.execute(
+      'CREATE INDEX replica_pending ON replica_ops(applied,logical)',
+    );
+    await db.execute(
+      'CREATE TABLE replica_heads(object_id TEXT NOT NULL, op_id TEXT NOT NULL REFERENCES replica_ops(id), PRIMARY KEY(object_id,op_id))',
+    );
+    await db.execute(
+      'CREATE TABLE replica_fields(object_id TEXT NOT NULL, field TEXT NOT NULL, op_id TEXT NOT NULL REFERENCES replica_ops(id), value TEXT NOT NULL, PRIMARY KEY(object_id,field,op_id))',
+    );
+    await db.execute(
+      'CREATE TABLE replica_receipts(peer_id TEXT NOT NULL, op_id TEXT NOT NULL REFERENCES replica_ops(id), PRIMARY KEY(peer_id,op_id))',
+    );
+    await db.insert('replica_meta', {
+      'key': 'device',
+      'value': const Uuid().v4(),
+    });
+    await db.insert('replica_meta', {'key': 'sequence', 'value': '0'});
+    await db.insert('replica_meta', {'key': 'logical', 'value': '0'});
   }
 
   Future<int> _meta(DatabaseExecutor tx, String key) async => int.parse(
@@ -101,7 +151,7 @@ class Replica {
     String kind,
     Map<String, Object?> fields, {
     List<String>? parents,
-  }) => db.transaction((tx) async {
+  }) => _write((tx) async {
     final base = parents ?? await _heads(tx, objectId);
     final sequence = await _meta(tx, 'sequence') + 1;
     final logical = await _meta(tx, 'logical') + 1;
@@ -179,10 +229,9 @@ class Replica {
   /// Returns durable receipts only AFTER the transaction has committed. A
   /// receipt for a pending child acknowledges storage, not materialization;
   /// the missing parent remains independently unacknowledged and is resent.
-  Future<List<String>> receive(
-    SyncBatch batch, {
-    String? fromPeer,
-  }) => db.transaction((tx) async {
+  Future<List<String>> receive(SyncBatch batch, {String? fromPeer}) => _write((
+    tx,
+  ) async {
     if (fromPeer != null && (!validUuid(fromPeer) || fromPeer == deviceId)) {
       throw const SyncProtocolException('Некорректный источник пакета.');
     }
@@ -345,7 +394,7 @@ class Replica {
     }
   }
 
-  Future<ReplicaObject?> read(String objectId) => db.transaction((tx) async {
+  Future<ReplicaObject?> read(String objectId) => _read((tx) async {
     final rows = await tx.rawQuery(
       'SELECT f.field,f.value,f.op_id,o.logical,o.origin,o.sequence,o.kind FROM replica_fields f JOIN replica_ops o ON o.id=f.op_id WHERE f.object_id = ? ORDER BY o.logical,o.origin,o.sequence',
       [objectId],
@@ -439,7 +488,7 @@ class Replica {
   }
 
   Future<void> acknowledge(String peerId, List<String> ids) =>
-      db.transaction((tx) async {
+      _read((tx) async {
         if (!validUuid(peerId) ||
             peerId == deviceId ||
             ids.length > maxSyncBatchOperations ||
@@ -482,7 +531,7 @@ class Replica {
         await db.rawQuery('SELECT COUNT(*) FROM replica_ops WHERE applied = 0'),
       ) ??
       0;
-  Future<void> close() => db.close();
+  Future<void> close() => (db as Database).close();
 }
 
 class FieldVersion {
