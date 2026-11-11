@@ -11,7 +11,7 @@
 - Вложения с SHA-256 и докачкой, просмотр изображений, сохранение файлов, сохранение конфликтующих вариантов и ручное объединение заметок/папок.
 - Полная копия `.ladno` с журналом и вложениями, импорт старых копий, экспорт Markdown с файлами.
 
-Установщики публикуются в [Releases](https://github.com/sssolyarka/ladno/releases), исходники второго этапа — в ветке `codex/stage-2-sync`. [Установка](docs/RELEASES.md), [проверки и ограничения](docs/STAGE2.md), [резервные копии](docs/BACKUPS.md).
+Готовые установщики 0.2.1: [Windows 10/11](https://github.com/sssolyarka/ladno/releases/download/v0.2.1/ladno-0.2.1-windows-x64-setup.exe), [Android](https://github.com/sssolyarka/ladno/releases/download/v0.2.1/ladno-0.2.1-android.apk), [Fedora RPM](https://github.com/sssolyarka/ladno/releases/download/v0.2.1/ladno-0.2.1-fedora-x86_64.rpm). [Все файлы и контрольные суммы](https://github.com/sssolyarka/ladno/releases/tag/v0.2.1). Исходники второго этапа объединены в `main`. [Установка](docs/RELEASES.md), [проверки и ограничения](docs/STAGE2.md), [резервные копии](docs/BACKUPS.md).
 
 **Следующие этапы:** задачи и проекты, календарь, уведомления, привычки, фокус, теги, внутренние ссылки, улучшение редактора и DeepSeek. «Входящие» пока показывает заметки. Внешние изображения не загружаются автоматически; файлы добавляются через вложения.
 
@@ -32,7 +32,7 @@
 
 ## Быстрый запуск на Fedora
 
-Здесь Flutter загружен в `.tooling/flutter` (служебная папка, не часть исходников). Если используете другую машину, установите Flutter stable по [официальной инструкции](https://docs.flutter.dev/install/manual).
+Здесь Flutter загружен в `.tooling/flutter` (служебная папка, не часть исходников). Если используете другую машину, установите проверенную версию Flutter 3.47.9 stable по [официальной инструкции](https://docs.flutter.dev/install/manual).
 
 Проверьте инструменты и библиотеки. Установка системных пакетов требует прав администратора:
 
@@ -64,7 +64,7 @@ flutter build linux --release
 
 ## Windows 10 x64
 
-Нужен Windows-компьютер, Flutter stable и Visual Studio 2022 с компонентом **Desktop development with C++**, Windows SDK и CMake. Visual Studio Code не заменяет эти инструменты. См. [официальную настройку](https://docs.flutter.dev/platform-integration/windows/setup).
+Нужен Windows-компьютер, Flutter 3.47.9 stable и Visual Studio 2022 с компонентом **Desktop development with C++**, Windows SDK и CMake. Visual Studio Code не заменяет эти инструменты. См. [официальную настройку](https://docs.flutter.dev/platform-integration/windows/setup).
 
 В PowerShell из папки исходников:
 
