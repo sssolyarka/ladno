@@ -128,7 +128,8 @@ class DeviceVault {
     await _replace([...current, peer]);
   });
 
-  Future<void> revoke(String id) =>
-      _replace(peers.where((p) => p.certificate.deviceId != id).toList());
+  Future<void> revoke(String id) => _serial(
+    () => _replace(peers.where((p) => p.certificate.deviceId != id).toList()),
+  );
   Future<void> destroy() => storage.delete('ladno.sync.$deviceId');
 }

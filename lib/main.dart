@@ -208,11 +208,17 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     if (!mounted || dirty || generation != editGeneration || fresh == null) {
       return;
     }
+    final movedToAnotherSection = fresh.deleted != trash;
     setState(() {
       selected = fresh;
       title.text = fresh.title;
       body.text = fresh.body;
+      if (movedToAnotherSection) {
+        section = fresh.deleted ? 'Корзина' : 'Заметки';
+        folderId = null;
+      }
     });
+    if (movedToAnotherSection) await reload();
   }
 
   Future<void> runBackup() async {
