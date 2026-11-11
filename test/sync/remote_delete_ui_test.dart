@@ -43,6 +43,9 @@ void main() {
       final editor = find.widgetWithText(TextField, 'Название заметки');
       expect(tester.widget<TextField>(editor).readOnly, isFalse);
       final workspace = tester.state(find.byType(Workspace)) as dynamic;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(workspace.sync.active, isTrue);
       await tester.runAsync(() async {
         final note = (await remote.notes()).single;
         note.deleted = true;
@@ -60,6 +63,8 @@ void main() {
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
       await tester.runAsync(() async {

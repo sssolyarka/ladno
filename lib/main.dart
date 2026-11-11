@@ -237,7 +237,13 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
       unawaited(flush());
-      unawaited(sync.pause());
+      // Desktop windows may lose focus while the phone continues syncing.
+      // Mobile background work is intentionally not a persistent service.
+      if (Platform.isAndroid ||
+          Platform.isIOS ||
+          state == AppLifecycleState.detached) {
+        unawaited(sync.pause());
+      }
     }
     if (state == AppLifecycleState.resumed) {
       unawaited(runBackup());

@@ -272,6 +272,7 @@ class SyncController extends ChangeNotifier {
     active = true;
     if (enabled || await store.setting('sync.enabled') == 'true') {
       await enable();
+      unawaited(syncNow());
     }
   }
 
