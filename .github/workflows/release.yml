@@ -51,7 +51,7 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsqlite3-dev rpm xvfb
+      - run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsqlite3-dev libsecret-1-dev rpm xvfb
       - run: flutter pub get --enforce-lockfile
       - run: flutter build linux --release --no-pub
       - name: Проверка запуска Linux
@@ -194,4 +194,4 @@ jobs:
             echo 'This version already has a release; increase pubspec.yaml version.'
             exit 1
           fi
-          gh release create "v$APP_VERSION" dist/* --target "$GITHUB_SHA" --title "Ладно $APP_VERSION — первый этап" --notes-file packaging/release-notes.md --prerelease
+          gh release create "v$APP_VERSION" dist/* --target "$GITHUB_SHA" --title "Ладно $APP_VERSION — второй этап" --notes-file packaging/release-notes.md --prerelease

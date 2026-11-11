@@ -448,14 +448,17 @@ class Replica {
   /// Retain files referenced by losing conflict variants as well.
   Future<List<AttachmentDescriptor>> referencedAttachments() async {
     final rows = await db.query(
-      'replica_fields',
-      columns: ['value'],
-      where: 'field = ?',
-      whereArgs: ['attachments'],
+      'replica_ops',
+      columns: ['document'],
+      where: 'applied = 1',
     );
     final descriptors = <String, AttachmentDescriptor>{};
     for (final row in rows) {
-      for (final value in jsonDecode(row['value'] as String) as List) {
+      for (final value
+          in (SyncOperation.fromJson(jsonDecode(row['document'] as String))
+                      .fields['attachments']
+                  as List? ??
+              [])) {
         final descriptor = AttachmentDescriptor.fromJson(value);
         final existing = descriptors[descriptor.hash];
         if (existing != null && existing.size != descriptor.size) {

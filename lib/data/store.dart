@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
@@ -7,6 +8,8 @@ import 'package:sqflite_common/sqlite_api.dart';
 import 'package:uuid/uuid.dart';
 
 import '../sync/replica.dart';
+import '../sync/attachment_cache.dart';
+import 'backup_archive.dart';
 import '../sync/operation.dart';
 
 const _uuid = Uuid();
@@ -78,6 +81,7 @@ class Store {
   final Database db;
   final Directory root;
   late Replica replica;
+  late final AttachmentCache attachments;
   Store._(this.db, this.root);
 
   static Future<void> _seed(DatabaseExecutor tx) async {
@@ -254,6 +258,9 @@ class Store {
       ),
     );
     final store = Store._(db, root);
+    store.attachments = AttachmentCache(
+      Directory(p.join(root.path, 'attachments')),
+    );
     store.replica = await Replica.attach(db, onChanged: _project);
     return store;
   }
@@ -338,6 +345,52 @@ class Store {
     note.updated = row['updated'] as int;
   }
 
+  Future<List<AttachmentDescriptor>> noteAttachments(String id) async {
+    final object = await replica.read(id);
+    return (object?.fields['attachments'] as List? ?? [])
+        .map(AttachmentDescriptor.fromJson)
+        .toList();
+  }
+
+  Future<void> addAttachment(String id, File file, {String? name}) async {
+    final version = await replica.read(id);
+    if (version == null) throw const FormatException('Заметка не найдена.');
+    final descriptor = await attachments.importFile(file, name: name);
+    final list = (version.fields['attachments'] as List? ?? [])
+        .map(AttachmentDescriptor.fromJson)
+        .toList();
+    list.removeWhere((d) => d.hash == descriptor.hash);
+    list.add(descriptor);
+    await replica.change(id, 'note', {
+      'attachments': list.map((d) => d.toJson()).toList(),
+    }, parents: version.heads);
+  }
+
+  Future<void> removeAttachment(String id, String hash) async {
+    final version = await replica.read(id);
+    if (version == null) return;
+    final list = (version.fields['attachments'] as List? ?? [])
+        .map(AttachmentDescriptor.fromJson)
+        .where((d) => d.hash != hash);
+    await replica.change(id, 'note', {
+      'attachments': list.map((d) => d.toJson()).toList(),
+    }, parents: version.heads);
+  }
+
+  Future<Uint8List> fullBackup() async =>
+      BackupArchive.create(await backup(), attachments);
+  static Map<String, List<Map<String, Object?>>> inspectArchive(
+    Uint8List bytes,
+  ) => validateBackup(BackupArchive.inspect(bytes).snapshot);
+  Future<void> restoreArchive(Uint8List bytes) async {
+    final archive = BackupArchive.inspect(bytes);
+    validateBackup(archive.snapshot);
+    // Immutable content-addressed files may be staged before the transaction;
+    // a failed database restore leaves harmless, unreferenced cache entries.
+    await archive.install(attachments);
+    await restore(archive.snapshot);
+  }
+
   Future<void> resolveConflict(
     ReplicaObject version,
     Map<String, Object?> fields,
@@ -393,19 +446,6 @@ class Store {
   }
 
   Future<String> backup() => db.transaction((tx) async {
-    final attachments = await tx.query(
-      'replica_fields',
-      columns: ['value'],
-      where: 'field = ?',
-      whereArgs: ['attachments'],
-    );
-    if (attachments.any(
-      (row) => (jsonDecode(row['value'] as String) as List).isNotEmpty,
-    )) {
-      throw const FormatException(
-        'Копия с вложениями требует файлового архива. Сохраните файлы отдельно; этот формат пока недоступен.',
-      );
-    }
     final payload = jsonEncode({
       'folders': await tx.query('folders'),
       'notes': await tx.query('notes'),
@@ -625,7 +665,7 @@ class Store {
       ),
     );
     final temp = File('${file.path}.tmp');
-    await temp.writeAsString(await backup(), flush: true);
+    await temp.writeAsBytes(await fullBackup(), flush: true);
     await temp.rename(file.path);
     if (prefix == 'auto') {
       final files =
@@ -659,13 +699,30 @@ class Store {
     await target.create(recursive: true);
     for (final note in await notes()) {
       // UUID filenames prevent traversal and collisions; title remains in content.
+      final links = <String>[];
+      for (final descriptor in await noteAttachments(note.id)) {
+        final file = await attachments.verifiedFile(descriptor);
+        if (file == null) {
+          throw const FormatException(
+            'Сначала дождитесь загрузки всех вложений.',
+          );
+        }
+        final directory = await Directory(p.join(target.path, 'files'))
+            .create(recursive: true);
+        await file.copy(p.join(directory.path, descriptor.hash));
+        links.add(
+          '[${descriptor.name.replaceAll('[', '').replaceAll(']', '')}](files/${descriptor.hash})',
+        );
+      }
       await File(p.join(target.path, '${note.id}.md')).writeAsString(
-        '# ${note.title.replaceAll('\n', ' ')}\n\n${note.body}',
+        '# ${note.title.replaceAll('\n', ' ')}\n\n${note.body}\n\n${links.join('\n')}',
         flush: true,
       );
     }
     await File(p.join(target.path, 'ladno-export.json'))
         .writeAsString(await backup(), flush: true);
+    await File(p.join(target.path, 'ladno-full.ladno'))
+        .writeAsBytes(await fullBackup(), flush: true);
   }
 
   Future<void> close() => db.close();

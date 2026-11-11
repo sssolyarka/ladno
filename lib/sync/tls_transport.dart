@@ -55,9 +55,9 @@ class TlsIdentity {
   final String _privateKeyPem;
   TlsIdentity(this.certificate, String privateKeyPem)
     : _privateKeyPem = privateKeyPem {
-    _context();
+    createContext();
   }
-  SecurityContext _context() => SecurityContext(withTrustedRoots: false)
+  SecurityContext createContext() => SecurityContext(withTrustedRoots: false)
     ..minimumTlsProtocolVersion = TlsProtocolVersion.tls1_3
     ..useCertificateChainBytes(utf8.encode(certificate.certificatePem))
     ..usePrivateKeyBytes(utf8.encode(_privateKeyPem));
@@ -87,6 +87,7 @@ class TlsSyncServer {
   final Map<String, PeerCertificate> _trusted = {};
   final SecurityContext _context;
   late final HttpServer _http;
+  final _handling = <Future<void>>{};
   var _active = 0;
   var _closed = false;
   int get port => _http.port;
@@ -95,7 +96,7 @@ class TlsSyncServer {
     this.identity,
     this.attachments,
     this.onDataChanged,
-  ) : _context = identity._context();
+  ) : _context = identity.createContext();
 
   static Future<TlsSyncServer> start({
     required Replica replica,
@@ -128,7 +129,13 @@ class TlsSyncServer {
     );
     service._http.idleTimeout = const Duration(seconds: 10);
     service._http.listen(
-      (request) => unawaited(service._handle(request)),
+      (request) {
+        final handling = service._handle(request);
+        service._handling.add(handling);
+        unawaited(
+          handling.whenComplete(() => service._handling.remove(handling)),
+        );
+      },
       onError: (Object _, StackTrace _) {
         /* Refused TLS handshakes; no secret logging. */
       },
@@ -281,6 +288,7 @@ class TlsSyncServer {
           });
         } else if (route == '/v1/file/finish') {
           await cache.finish(descriptor);
+          onDataChanged?.call();
           await _reply(request, peer, {'complete': true});
         } else {
           throw const SyncTransportException('invalid_route');
@@ -316,6 +324,7 @@ class TlsSyncServer {
     if (_closed) return;
     _closed = true;
     await _http.close(force: true);
+    await Future.wait(_handling.toList());
   }
 }
 
@@ -348,7 +357,7 @@ class TlsSyncClient {
     if (_cancelled) throw const SyncTransportException('cancelled');
     // Empty roots force exact pinning BEFORE any notes are sent, even for a
     // CA-signed server certificate. Never return true without this comparison.
-    final client = HttpClient(context: identity._context())
+    final client = HttpClient(context: identity.createContext())
       ..connectionTimeout = timeout
       ..autoUncompress = false;
     client.findProxy = (_) => 'DIRECT';

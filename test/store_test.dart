@@ -123,7 +123,7 @@ void main() {
       await File('${out.path}/${n.id}.md').readAsString(),
       contains('**Текст**'),
     );
-    expect(await out.list().length, 2);
+    expect(await out.list().length, 3);
   });
   test('Автокопии ограничены семью и проходят валидацию', () async {
     for (var i = 0; i < 10; i++) {
@@ -133,7 +133,7 @@ void main() {
     expect(files, hasLength(7));
     for (final f in files) {
       expect(
-        () => Store.validateBackup(File(f.path).readAsStringSync()),
+        () => Store.inspectArchive(File(f.path).readAsBytesSync()),
         returnsNormally,
       );
     }

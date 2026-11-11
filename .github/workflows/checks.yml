@@ -23,7 +23,7 @@ jobs:
           flutter-version: '3.47.9'
           channel: stable
           cache: true
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev openssl
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev openssl libsecret-1-dev
       - run: flutter pub get --enforce-lockfile
       - run: dart analyze lib test
       - run: flutter test --no-pub

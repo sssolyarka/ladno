@@ -11,9 +11,13 @@ BuildArch:      x86_64
 AutoReqProv:    no
 Requires:       gtk3, libstdc++, libX11, libXext, libglvnd-glx, sqlite-libs
 
+Requires: libsecret
+Requires: avahi
+
 %description
 Ладно — локальные заметки с папками, поиском, Markdown и резервными копиями.
-Первый этап приложения. Синхронизация и задачи ещё не реализованы.
+Защищённая синхронизация в локальной сети, вложения и конфликты.
+Для ключей подключения нужен работающий кошелёк Secret Service.
 
 %prep
 %build

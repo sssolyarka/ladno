@@ -85,6 +85,11 @@ class AttachmentCache {
         await _hash(file) == descriptor.hash;
   }
 
+  Future<File?> verifiedFile(AttachmentDescriptor descriptor) =>
+      _serial(() async {
+        return await _validComplete(descriptor) ? _complete(descriptor) : null;
+      });
+
   Future<bool> contains(AttachmentDescriptor descriptor) =>
       _serial(() => _validComplete(descriptor));
 
