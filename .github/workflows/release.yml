@@ -2,9 +2,16 @@ name: Установщики и релиз
 
 on:
   workflow_dispatch:
+    inputs:
+      reuse_run_id:
+        description: 'Optional earlier run with identical Windows/Android build inputs'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ladno-release
@@ -22,6 +29,18 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Validate reused installers
+        if: inputs.reuse_run_id != ''
+        env:
+          REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          [[ "$REUSE_RUN_ID" =~ ^[0-9]+$ ]]
+          source_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN_ID" --jq .head_sha)"
+          python3 scripts/check-reused-builds.py "$source_sha"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -72,6 +91,7 @@ jobs:
           retention-days: 7
 
   windows:
+    if: ${{ inputs.reuse_run_id == '' }}
     name: Windows 10 x64 Setup
     needs: checks
     runs-on: windows-2022
@@ -127,6 +147,7 @@ jobs:
           retention-days: 7
 
   android:
+    if: ${{ inputs.reuse_run_id == '' }}
     name: Android APK
     needs: checks
     runs-on: ubuntu-24.04
@@ -169,12 +190,14 @@ jobs:
           retention-days: 7
 
   publish:
+    if: ${{ always() && needs.checks.result == 'success' && needs.linux.result == 'success' && (inputs.reuse_run_id != '' || (needs.windows.result == 'success' && needs.android.result == 'success')) }}
     name: GitHub Releases
     needs: [checks, linux, windows, android]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -182,6 +205,20 @@ jobs:
           pattern: installers-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.reuse_run_id != ''
+        with:
+          name: installers-windows
+          path: dist
+          run-id: ${{ inputs.reuse_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: inputs.reuse_run_id != ''
+        with:
+          name: installers-android
+          path: dist
+          run-id: ${{ inputs.reuse_run_id }}
+          github-token: ${{ github.token }}
       - name: Контрольные суммы
         run: cd dist && sha256sum *.apk *.exe *.rpm *.tar.gz > SHA256SUMS.txt
       - name: Опубликовать установщики
