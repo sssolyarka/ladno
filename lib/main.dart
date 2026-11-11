@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -13,6 +12,12 @@ import 'package:sqflite/sqflite.dart' as mobile;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'data/store.dart';
+import 'widgets/conflict_dialog.dart';
+import 'widgets/sync_settings.dart';
+import 'widgets/folder_conflicts.dart';
+import 'widgets/attachment_panel.dart';
+import 'sync/controller.dart';
+import 'data/backup_archive.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -148,7 +153,8 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   Timer? timer, backupTimer;
   Future<void> writes = Future.value();
   double sidebarWidth = 236, listWidth = 326;
-  int loadToken = 0;
+  int loadToken = 0, editGeneration = 0;
+  late final SyncController sync;
   bool get trash => section == 'Корзина';
   bool get noteSection =>
       ['Заметки', 'Входящие', 'Корзина', 'Поиск'].contains(section);
@@ -168,12 +174,51 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    sync = SyncController(
+      store,
+      onDataChanged: () => unawaited(refreshRemote()),
+    );
+    sync.addListener(syncStatusChanged);
+    unawaited(sync.initialize());
     unawaited(reload());
     unawaited(runBackup());
     backupTimer = Timer.periodic(
       const Duration(hours: 1),
       (_) => unawaited(runBackup()),
     );
+  }
+
+  void syncStatusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> refreshRemote() async {
+    final generation = editGeneration, id = selected?.id;
+    await writes;
+    await reload();
+    if (!mounted ||
+        dirty ||
+        generation != editGeneration ||
+        id == null ||
+        selected?.id != id) {
+      return;
+    }
+    final all = [...await store.notes(), ...await store.notes(trash: true)];
+    final fresh = all.where((n) => n.id == id).firstOrNull;
+    if (!mounted || dirty || generation != editGeneration || fresh == null) {
+      return;
+    }
+    final movedToAnotherSection = fresh.deleted != trash;
+    setState(() {
+      selected = fresh;
+      title.text = fresh.title;
+      body.text = fresh.body;
+      if (movedToAnotherSection) {
+        section = fresh.deleted ? 'Корзина' : 'Заметки';
+        folderId = null;
+      }
+    });
+    if (movedToAnotherSection) await reload();
   }
 
   Future<void> runBackup() async {
@@ -190,8 +235,20 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed) unawaited(flush());
-    if (state == AppLifecycleState.resumed) unawaited(runBackup());
+    if (state != AppLifecycleState.resumed) {
+      unawaited(flush());
+      // Desktop windows may lose focus while the phone continues syncing.
+      // Mobile background work is intentionally not a persistent service.
+      if (Platform.isAndroid ||
+          Platform.isIOS ||
+          state == AppLifecycleState.detached) {
+        unawaited(sync.pause());
+      }
+    }
+    if (state == AppLifecycleState.resumed) {
+      unawaited(runBackup());
+      unawaited(sync.resume());
+    }
   }
 
   @override
@@ -199,6 +256,8 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     backupTimer?.cancel();
+    sync.removeListener(syncStatusChanged);
+    sync.dispose();
     // onChanged enqueues each edit immediately; no debounce data is discarded.
     title.dispose();
     body.dispose();
@@ -226,6 +285,11 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         setState(() {
           notes = list;
           folders = fs;
+          for (final note in list) {
+            if (note.id == selected?.id) {
+              selected!.hasConflict = note.hasConflict;
+            }
+          }
         });
       }
     } catch (_) {
@@ -236,15 +300,17 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   void changed() {
     final n = selected;
     if (n == null) return;
+    editGeneration++;
     n.title = title.text;
     n.body = body.text;
     dirty = true;
     setState(() => status = 'Сохранение…');
     // Capture every edit before yielding: changing selection cannot redirect it.
-    final snapshot = Note.fromMap(n.toMap());
+    final snapshot = n.snapshot();
     writes = writes.then((_) async {
       try {
         await store.save(snapshot);
+        sync.changed();
         if (mounted &&
             selected?.id == snapshot.id &&
             title.text == snapshot.title &&
@@ -330,10 +396,11 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   Future<void> mutate(void Function(Note) change) async {
     if (!await safeFlush() || selected == null) return;
     final n = selected!;
-    final before = Note.fromMap(n.toMap());
+    final before = n.snapshot();
     change(n);
     try {
       await store.save(n);
+      sync.changed();
       if (!mounted) return;
       if (n.deleted != trash) {
         setState(() {
@@ -383,6 +450,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     if (name == null || name.trim().isEmpty) return;
     try {
       await store.addFolder(name);
+      sync.changed();
       await reload();
     } catch (_) {
       message('Не удалось создать папку.');
@@ -414,28 +482,24 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     setState(() => busy = true);
     try {
       if (action == 'backup') {
-        final data = await store.backup();
-        final path = await FilePicker.platform.saveFile(
+        final data = await store.fullBackup();
+        final path = await FilePicker.saveFile(
           dialogTitle: 'Сохранить резервную копию',
           fileName:
               'ladno-${DateTime.now().toIso8601String().substring(0, 10)}.ladno',
-          bytes: Uint8List.fromList(utf8.encode(data)),
+          bytes: data,
         );
         if (path != null) {
           if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
-            await File(path).writeAsString(data, flush: true);
+            await File.fromUri(path).writeAsBytes(data, flush: true);
           }
           message('Резервная копия сохранена.');
         }
       } else if (action == 'restore') {
-        final result = await FilePicker.platform.pickFiles(type: FileType.any);
-        final path = result?.files.single.path;
-        if (path == null) return;
-        if (await File(path).length() > 50 * 1024 * 1024) {
-          throw const FormatException('Архив больше 50 МБ.');
-        }
-        final input = await File(path).readAsString();
-        final data = Store.validateBackup(input);
+        final picked = await FilePicker.pickFile(type: FileType.any);
+        if (picked == null) return;
+        final input = await readPicked(picked, BackupArchive.maxBytes);
+        final data = Store.inspectArchive(input);
         if (!mounted ||
             !await confirm(
               'Заменить текущие записи?',
@@ -444,7 +508,26 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
           return;
         }
         await store.localBackup(prefix: 'before-restore');
-        await store.restore(input);
+        final oldVault = sync.vault;
+        await sync.pause();
+        try {
+          await store.restoreArchive(input);
+        } on Object {
+          await sync.resume();
+          rethrow;
+        }
+        if (oldVault != null) {
+          try {
+            await oldVault.destroy();
+          } on Object {
+            /* remains protected, never reused */
+          }
+        }
+        sync.vault = null;
+        sync.enabled = false;
+        sync.active = true;
+        sync.status = 'Данные восстановлены. Подключите устройства заново.';
+        await store.setSetting('sync.enabled', 'false');
         if (!mounted) return;
         setState(() {
           selected = null;
@@ -454,7 +537,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         await reload();
         message('Данные восстановлены.');
       } else {
-        final path = await FilePicker.platform.getDirectoryPath(
+        final path = await FilePicker.getDirectoryPath(
           dialogTitle: 'Папка экспорта Markdown',
         );
         if (path == null) return;
@@ -488,6 +571,45 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       selection: TextSelection.collapsed(offset: end + left.length),
     );
     changed();
+  }
+
+  Future<void> resolveConflict() async {
+    if (!await safeFlush() || selected == null) return;
+    final id = selected!.id;
+    try {
+      final version = await store.replica.read(id);
+      if (!mounted || version == null) return;
+      if (!version.hasConflict) {
+        await reload();
+        return;
+      }
+      final result = await showDialog<Map<String, Object?>>(
+        context: context,
+        builder: (_) => ConflictDialog(
+          version: version,
+          folders: {
+            for (final f in folders) f['id'] as String: f['name'] as String,
+          },
+        ),
+      );
+      if (result == null) return;
+      await store.resolveConflict(version, result);
+      sync.changed();
+      final all = [...await store.notes(), ...await store.notes(trash: true)];
+      final fresh = all.where((n) => n.id == id).first;
+      if (!mounted) return;
+      setState(() {
+        selected = fresh;
+        title.text = fresh.title;
+        body.text = fresh.body;
+        section = fresh.deleted ? 'Корзина' : 'Заметки';
+        folderId = null;
+        status = 'Сохранено локально';
+      });
+      await reload();
+    } catch (_) {
+      message('Не удалось сохранить объединение. Версии не удалены.');
+    }
   }
 
   Future<void> history() async {
@@ -682,6 +804,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                           }
                           try {
                             await store.deleteFolder(f['id'] as String);
+                            sync.changed();
                             await navigate('Заметки');
                           } catch (_) {
                             message('Не удалось удалить папку.');
@@ -813,6 +936,11 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ),
+                                if (n.hasConflict)
+                                  const Tooltip(
+                                    message: 'Есть разные версии',
+                                    child: Icon(Icons.merge_type, size: 18),
+                                  ),
                                 if (n.pinned)
                                   Icon(
                                     Icons.push_pin,
@@ -965,7 +1093,31 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(sync.status, style: const TextStyle(fontSize: 11)),
+            ),
+          ),
           const Divider(height: 1),
+          if (n.hasConflict)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Есть изменения с разных устройств. Обе версии сохранены.',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => unawaited(resolveConflict()),
+                    child: const Text('Сравнить'),
+                  ),
+                ],
+              ),
+            ),
           if (trash)
             const Padding(
               padding: EdgeInsets.all(12),
@@ -985,6 +1137,12 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
               ),
               items: [
                 const DropdownMenuItem(value: '', child: Text('Без папки')),
+                if (n.folderId != null &&
+                    !folders.any((f) => f['id'] == n.folderId))
+                  DropdownMenuItem(
+                    value: n.folderId,
+                    child: const Text('Папка недоступна'),
+                  ),
                 for (final f in folders)
                   DropdownMenuItem(
                     value: f['id'] as String,
@@ -1046,7 +1204,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                       padding: const EdgeInsets.all(12),
                       color: Theme.of(context).colorScheme.surfaceContainer,
                       child: Text(
-                        'Изображение: ${alt ?? uri.toString()}\nВложения появятся на этапе 2.',
+                        'Изображение: ${alt ?? uri.toString()}\nВнешние изображения не загружаются автоматически. Добавьте файл во вложения.',
                       ),
                     ),
                     onTapLink: (text, href, title) {
@@ -1076,6 +1234,17 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                       ),
                     ),
                   ),
+          ),
+          AttachmentPanel(
+            key: ValueKey('attachments-${n.id}'),
+            store: store,
+            noteId: n.id,
+            readOnly: trash,
+            beforeChange: safeFlush,
+            onChanged: () {
+              sync.changed();
+              unawaited(reload());
+            },
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 6, 24, 14),
@@ -1168,7 +1337,16 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Не подключено. Защищённая синхронизация запланирована на этап 2. Сейчас устройства хранят независимые данные.',
+        'Связывайте только свои устройства. Сверяйте код на обоих экранах.',
+      ),
+      const SizedBox(height: 12),
+      SyncSettings(sync: sync),
+      FolderConflicts(
+        store: store,
+        onChanged: () {
+          sync.changed();
+          unawaited(reload());
+        },
       ),
       const SizedBox(height: 28),
       const Text(
@@ -1181,7 +1359,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       ),
       const SizedBox(height: 28),
       const Text(
-        'Ладно · этап 1',
+        'Ладно · этап 2',
         style: TextStyle(fontWeight: FontWeight.w600),
       ),
       const Text(

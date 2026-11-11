@@ -1,0 +1,29 @@
+name: Проверки второго этапа
+
+on:
+  pull_request:
+  push:
+    branches: ['codex/stage-2-sync']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - run: bash scripts/install-build-deps.sh --checks
+      - run: flutter pub get --enforce-lockfile
+      - run: dart analyze lib test
+      - run: flutter test --no-pub
