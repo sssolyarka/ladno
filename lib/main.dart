@@ -12,6 +12,9 @@ import 'package:sqflite/sqflite.dart' as mobile;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'data/store.dart';
+import 'widgets/task_board.dart';
+import 'widgets/reminder_settings.dart';
+import 'planning/reminders.dart';
 import 'widgets/conflict_dialog.dart';
 import 'widgets/sync_settings.dart';
 import 'widgets/folder_conflicts.dart';
@@ -153,15 +156,18 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   Timer? timer, backupTimer;
   Future<void> writes = Future.value();
   double sidebarWidth = 236, listWidth = 326;
-  int loadToken = 0, editGeneration = 0;
+  int loadToken = 0, editGeneration = 0, planningRevision = 0;
   late final SyncController sync;
+  late final ReminderService reminders;
   bool get trash => section == 'Корзина';
-  bool get noteSection =>
-      ['Заметки', 'Входящие', 'Корзина', 'Поиск'].contains(section);
+  bool get noteSection => ['Заметки', 'Корзина', 'Поиск'].contains(section);
   static const sections = <(String, IconData)>[
     ('Входящие', Icons.inbox_outlined),
     ('Сегодня', Icons.wb_sunny_outlined),
     ('Предстоящие', Icons.date_range_outlined),
+    ('Задачи', Icons.checklist_outlined),
+    ('Календарь', Icons.calendar_month_outlined),
+    ('Архив задач', Icons.inventory_2_outlined),
     ('Заметки', Icons.edit_note),
     ('Проекты', Icons.folder_copy_outlined),
     ('Привычки', Icons.spa_outlined),
@@ -178,6 +184,15 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       store,
       onDataChanged: () => unawaited(refreshRemote()),
     );
+    reminders = ReminderService(
+      store,
+      backend: NativeReminders(
+        onOpen: (_) {
+          if (mounted) unawaited(navigate('Задачи'));
+        },
+      ),
+    );
+    unawaited(reminders.initialize());
     sync.addListener(syncStatusChanged);
     unawaited(sync.initialize());
     unawaited(reload());
@@ -193,6 +208,8 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   }
 
   Future<void> refreshRemote() async {
+    unawaited(reminders.refresh());
+    if (mounted) setState(() => planningRevision++);
     final generation = editGeneration, id = selected?.id;
     await writes;
     await reload();
@@ -247,6 +264,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     }
     if (state == AppLifecycleState.resumed) {
       unawaited(runBackup());
+      unawaited(reminders.refresh());
       unawaited(sync.resume());
     }
   }
@@ -258,6 +276,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     backupTimer?.cancel();
     sync.removeListener(syncStatusChanged);
     sync.dispose();
+    reminders.dispose();
     // onChanged enqueues each edit immediately; no debounce data is discarded.
     title.dispose();
     body.dispose();
@@ -512,6 +531,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         await sync.pause();
         try {
           await store.restoreArchive(input);
+          await reminders.refresh();
         } on Object {
           await sync.resume();
           rethrow;
@@ -1341,6 +1361,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       ),
       const SizedBox(height: 12),
       SyncSettings(sync: sync),
+      ReminderSettings(service: reminders),
       FolderConflicts(
         store: store,
         onChanged: () {
@@ -1359,15 +1380,36 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       ),
       const SizedBox(height: 28),
       const Text(
-        'Ладно · этап 2',
+        'Ладно · этап 3 — в разработке',
         style: TextStyle(fontWeight: FontWeight.w600),
       ),
       const Text(
-        'Ctrl+N — заметка · Ctrl+F — поиск · Ctrl+S — сохранить.\nЗадачи, уведомления, привычки и фокус ещё не реализованы.',
+        'Ctrl+N — заметка · Ctrl+F — поиск · Ctrl+S — сохранить.\nПривычки и фокус появятся на следующем этапе.',
       ),
     ],
   );
-  Widget content() => section == 'Настройки'
+  Widget content() =>
+      [
+        'Входящие',
+        'Сегодня',
+        'Предстоящие',
+        'Задачи',
+        'Проекты',
+        'Календарь',
+        'Архив задач',
+      ].contains(section)
+      ? TaskBoard(
+          key: ValueKey(section),
+          store: store,
+          section: section,
+          revision: planningRevision,
+          onChanged: () {
+            sync.changed();
+            unawaited(reminders.refresh());
+            if (mounted) setState(() => planningRevision++);
+          },
+        )
+      : section == 'Настройки'
       ? settings()
       : empty(
           sections.where((s) => s.$1 == section).firstOrNull?.$2 ??
@@ -1463,7 +1505,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                     ? (mobileEditor ? editor(mobile: true) : noteList())
                     : content(),
               ),
-              floatingActionButton: mobileEditor
+              floatingActionButton: mobileEditor || !noteSection
                   ? null
                   : FloatingActionButton(
                       tooltip: 'Новая заметка',

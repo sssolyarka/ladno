@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:uuid/uuid.dart';
 
+import '../planning/values.dart';
+
 const syncProtocolVersion = 1;
 const maxSyncOperationBytes = 4 * 1024 * 1024;
 const maxSyncBatchBytes = 8 * 1024 * 1024;
@@ -74,7 +76,7 @@ class SyncOperation {
         !validOperationId(id) ||
         logical <= 0 ||
         logical > 9007199254740991 ||
-        !{'note', 'folder'}.contains(kind) ||
+        !{'note', 'folder', 'task', 'project'}.contains(kind) ||
         parents.length > 64 ||
         parents.toSet().length != parents.length ||
         parents.any((p) => !validOperationId(p) || p == id) ||
@@ -90,7 +92,27 @@ class SyncOperation {
       'attachments',
     };
     const folderFields = {'name', 'deleted'};
-    final allowed = kind == 'note' ? noteFields : folderFields;
+    const taskFields = {
+      'title',
+      'body',
+      'deleted',
+      'status',
+      'priority',
+      'projectId',
+      'parentId',
+      'dueDate',
+      'reminderAt',
+      'repeat',
+      'anchorDay',
+      'tags',
+    };
+    const projectFields = {'name', 'body', 'deleted', 'status'};
+    final allowed = switch (kind) {
+      'note' => noteFields,
+      'folder' => folderFields,
+      'task' => taskFields,
+      _ => projectFields,
+    };
     if (fields.keys.any((key) => !allowed.contains(key))) {
       throw const SyncProtocolException('Неизвестное поле объекта.');
     }
@@ -106,6 +128,48 @@ class SyncOperation {
           if (value is! String || value.length > 1000000) {
             throw const SyncProtocolException('Слишком большой текст.');
           }
+        case 'status':
+          if (value is! String ||
+              !(kind == 'project'
+                      ? {'active', 'done'}
+                      : {'open', 'doing', 'done', 'cancelled'})
+                  .contains(value)) {
+            throw const SyncProtocolException('Некорректный статус.');
+          }
+        case 'priority':
+          if (value is! int || value < 0 || value > 3) {
+            throw const SyncProtocolException('Некорректный приоритет.');
+          }
+        case 'anchorDay':
+          if (value is! int || value < 1 || value > 31) {
+            throw const SyncProtocolException('Некорректный день повтора.');
+          }
+        case 'repeat':
+          if (!{'none', 'daily', 'weekly', 'monthly'}.contains(value)) {
+            throw const SyncProtocolException('Некорректный повтор.');
+          }
+        case 'dueDate':
+          if (value != null && parseDay(value) == null) {
+            throw const SyncProtocolException('Некорректная дата.');
+          }
+        case 'reminderAt':
+          if (value != null &&
+              (value is! int ||
+                  value < 946684800000 ||
+                  value > 7258118399999)) {
+            throw const SyncProtocolException('Некорректное напоминание.');
+          }
+        case 'tags':
+          if (value is! List ||
+              value.length > 20 ||
+              value.any(
+                (v) => v is! String || v.trim().isEmpty || v.length > 40,
+              ) ||
+              value.toSet().length != value.length) {
+            throw const SyncProtocolException('Некорректные теги.');
+          }
+        case 'projectId':
+        case 'parentId':
         case 'folderId':
           if (value != null && !validUuid(value)) {
             throw const SyncProtocolException('Некорректная папка.');

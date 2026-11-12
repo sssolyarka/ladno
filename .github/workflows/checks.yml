@@ -1,9 +1,9 @@
-name: Проверки второго этапа
+name: Проверки приложения
 
 on:
   pull_request:
   push:
-    branches: ['codex/stage-2-sync']
+    branches: ['codex/stage-2-sync', 'codex/stage-3-tasks']
 
 permissions:
   contents: read
