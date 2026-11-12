@@ -1,7 +1,7 @@
 name: ladno
 description: "Ладно — личные заметки без облака. Этап 3: задачи и проекты."
 publish_to: 'none'
-version: 0.3.0-dev.2+5
+version: 0.3.0+5
 
 environment:
   sdk: ^3.13.7

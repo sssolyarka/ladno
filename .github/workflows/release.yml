@@ -219,8 +219,10 @@ jobs:
           path: dist
           run-id: ${{ inputs.reuse_run_id }}
           github-token: ${{ github.token }}
+      - name: Комплект администратора Pterodactyl
+        run: python3 scripts/package-admin.py
       - name: Контрольные суммы
-        run: cd dist && sha256sum *.apk *.exe *.rpm *.tar.gz > SHA256SUMS.txt
+        run: cd dist && sha256sum *.apk *.exe *.rpm *.tar.gz *.zip > SHA256SUMS.txt
       - name: Опубликовать установщики
         env:
           GH_TOKEN: ${{ github.token }}
@@ -231,4 +233,4 @@ jobs:
             echo 'This version already has a release; increase pubspec.yaml version.'
             exit 1
           fi
-          gh release create "v$APP_VERSION" dist/* --target "$GITHUB_SHA" --title "Ладно $APP_VERSION — второй этап" --notes-file packaging/release-notes.md --prerelease
+          gh release create "v$APP_VERSION" dist/* --target "$GITHUB_SHA" --title "Ладно $APP_VERSION — серверная синхронизация" --notes-file packaging/release-notes.md --prerelease
