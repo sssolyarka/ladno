@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:ladno_backend/backend.dart';
+import 'package:ladno_backend/deepseek.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length == 1 && args.single == 'health') {
@@ -38,6 +39,15 @@ Future<void> main(List<String> args) async {
       Platform.environment['MAX_STORAGE_BYTES'] ?? '10737418240',
     ),
   );
+  final keyFile = File(
+    Platform.environment['DEEPSEEK_KEY_FILE'] ?? '/home/container/deepseek.key',
+  );
+  final apiKey =
+      Platform.environment['DEEPSEEK_API_KEY'] ??
+      (await keyFile.exists() ? (await keyFile.readAsString()).trim() : '');
+  if (apiKey.isNotEmpty) {
+    backend.ai = DeepSeek(apiKey);
+  }
   if (args.isNotEmpty) {
     try {
       switch (args.first) {

@@ -11,6 +11,9 @@ import 'package:ladno/sync/backend_connection.dart';
 import 'package:ladno/sync/tls_transport.dart';
 
 import '../../server/lib/backend.dart';
+import '../../server/lib/deepseek.dart';
+
+import 'package:ladno/sync/ai_client.dart';
 
 void main() {
   sqfliteFfiInit();
@@ -104,6 +107,102 @@ void main() {
       http.close(force: true);
     }
   }
+
+  test(
+    'AI требует авторизацию, сообщает о ключе и возвращает ответ без секрета',
+    () async {
+      expect((await post('/v1/ai/status', {'protocol': 1}))['httpStatus'], 403);
+      final connection = await join(a);
+      expect(
+        (await aiRequest(
+          connection,
+          '/v1/ai/status',
+          trustedContext: trust,
+        ))['configured'],
+        false,
+      );
+      expect(
+        (await post('/v1/ai/chat', {
+          'protocol': 1,
+          'prompt': 'План',
+        }, who: connection))['error'],
+        'ai_not_configured',
+      );
+      final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      var calls = 0;
+      upstream.listen((request) async {
+        calls++;
+        expect(request.headers.value('authorization'), 'Bearer test-secret');
+        final data = jsonDecode(await utf8.decoder.bind(request).join());
+        expect(data['messages'][1]['content'], 'План');
+        expect(data['model'], 'deepseek-flash');
+        request.response.headers.contentType = ContentType.json;
+        request.response.write(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {'content': 'Готовый план'},
+              },
+            ],
+          }),
+        );
+        await request.response.close();
+      });
+      addTearDown(() => upstream.close(force: true));
+      server.ai = DeepSeek(
+        'test-secret',
+        endpoint: Uri.parse(
+          'http://127.0.0.1:${upstream.port}/chat/completions',
+        ),
+      );
+      expect(
+        (await aiRequest(
+          connection,
+          '/v1/ai/status',
+          trustedContext: trust,
+        ))['configured'],
+        true,
+      );
+      final result = await aiRequest(
+        connection,
+        '/v1/ai/chat',
+        prompt: 'План',
+        trustedContext: trust,
+      );
+      expect(result['answer'], 'Готовый план');
+      expect(jsonEncode(result), isNot(contains('test-secret')));
+      expect(
+        (await post('/v1/ai/chat', {
+          'protocol': 1,
+          'prompt': '',
+        }, who: connection))['httpStatus'],
+        400,
+      );
+      for (var i = 1; i < 10; i++) {
+        await aiRequest(
+          connection,
+          '/v1/ai/chat',
+          prompt: 'План',
+          trustedContext: trust,
+        );
+      }
+      expect(
+        (await post('/v1/ai/chat', {
+          'protocol': 1,
+          'prompt': 'План',
+        }, who: connection))['httpStatus'],
+        429,
+      );
+      expect(calls, 10);
+      await server.revoke(connection.deviceId);
+      expect(
+        (await post('/v1/ai/status', {
+          'protocol': 1,
+        }, who: connection))['httpStatus'],
+        403,
+      );
+    },
+  );
 
   test('HTTPS: два клиента обмениваются заметками, задачами, конфликтами и файлами', () async {
     final ca = await join(a), cb = await join(b);

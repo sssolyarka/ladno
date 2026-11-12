@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'deepseek.dart';
+
 import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -23,6 +25,7 @@ class BackendFailure implements Exception {
 }
 
 class Backend {
+  DeepSeek? ai;
   final Replica replica;
   final AttachmentCache attachments;
   final int maxOperations, maxStorageBytes;
@@ -250,6 +253,32 @@ class Backend {
             ? AttachmentCache.chunkBytes * 2
             : 65536,
       ).timeout(const Duration(seconds: 12));
+      if (path == '/v1/ai/status') {
+        _control(body);
+        await _reply(request, {'configured': ai != null});
+        return;
+      }
+      if (path == '/v1/ai/chat') {
+        final value = _control(body);
+        final prompt = value['prompt'];
+        if (prompt is! String ||
+            prompt.trim().isEmpty ||
+            prompt.length > 12000) {
+          throw const BackendFailure(400, 'invalid_prompt');
+        }
+        final provider = ai;
+        if (provider == null)
+          throw const BackendFailure(503, 'ai_not_configured');
+        try {
+          await _auth(request);
+          final answer = await provider.ask(prompt);
+          await _auth(request);
+          await _reply(request, {'answer': answer});
+        } on DeepSeekFailure catch (e) {
+          throw BackendFailure(e.status, e.code);
+        }
+        return;
+      }
       // Serialize authorization and mutations so revoke also blocks queued work.
       final result = await _serial(() async {
         await _auth(request);

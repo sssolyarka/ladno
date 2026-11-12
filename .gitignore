@@ -57,3 +57,6 @@ app.*.map.json
 deploy/certs/
 
 /server/build/
+
+# Server-side AI credential
+deepseek.key
