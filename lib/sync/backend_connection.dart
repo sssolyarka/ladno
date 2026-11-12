@@ -82,11 +82,6 @@ class BackendConnection {
           }),
         );
         final response = await request.close();
-        if (response.statusCode != 200) {
-          throw const FormatException(
-            'Сервер отклонил подключение. Проверьте срок кода; для уже подключённого устройства используйте сохранённый токен.',
-          );
-        }
         final bytes = <int>[];
         await for (final chunk in response) {
           if (bytes.length + chunk.length > 65536) {
@@ -95,6 +90,18 @@ class BackendConnection {
           bytes.addAll(chunk);
         }
         final value = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        if (response.statusCode != 200) {
+          throw FormatException(switch (value['error']) {
+            'invalid_invite' => 'Код не найден, уже использован или истёк. Создайте новый код командой invite.',
+            'invalid_enrollment' => 'Сервер отклонил имя или идентификатор устройства. Проверьте имя устройства.',
+            'incompatible_protocol' => 'Версии приложения и сервера несовместимы. Обновите приложение и бэкенд.',
+            'invalid_data' => 'Сервер не смог прочитать данные подключения. Требуется проверка бэкенда и Nginx; срок кода может быть ни при чём.',
+            'device_limit' => 'Достигнут лимит устройств на сервере. Обратитесь к владельцу сервера.',
+            'busy' => 'Сервер занят. Повторите подключение позже.',
+            _ =>
+              'Подключение отклонено сервером (HTTP ${response.statusCode}).',
+          });
+        }
         if (value['protocol'] != syncProtocolVersion) {
           throw const FormatException('Несовместимая версия сервера.');
         }
