@@ -22,6 +22,10 @@ bash /work/deploy/admin/setup-ladno.sh prepare --dir /opt/ladno-test
 grep -q 'ladno-backend:pterodactyl' /tmp/ladno-docker-calls
 if bash /work/deploy/admin/setup-ladno.sh prepare --dir /opt/ladno-test; then echo 'Existing directory was unexpectedly accepted' >&2; exit 1; fi
 bash /work/deploy/admin/setup-ladno.sh build --dir /opt/ladno-test
+docker_calls=$(wc -l < /tmp/ladno-docker-calls)
+bash /work/deploy/admin/setup-ladno.sh sources --dir /opt/ladno-proxy-test
+[[ $(wc -l < /tmp/ladno-docker-calls) == "$docker_calls" ]]
+[[ -f /opt/ladno-proxy-test/deploy/admin/configure-nginx.sh ]]
 cat > /tmp/ladno-fixtures/health.py <<'PY'
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -48,7 +52,7 @@ server {
 CONF
 existing_hash=$(sha256sum /etc/nginx/sites-enabled/unchanged-test.conf)
 nginx
-bash /work/deploy/admin/setup-ladno.sh proxy --dir /opt/ladno-test --port 18080 --cert /tmp/ladno-fixtures/fullchain.pem --key /tmp/ladno-fixtures/privkey.pem
+bash /work/deploy/admin/setup-ladno.sh proxy --dir /opt/ladno-proxy-test --port 18080 --cert /tmp/ladno-fixtures/fullchain.pem --key /tmp/ladno-fixtures/privkey.pem
 [[ $(sha256sum /etc/nginx/sites-enabled/unchanged-test.conf) == "$existing_hash" ]]
 [[ $(curl --noproxy '*' --silent -H 'Host: existing.fixture' http://127.0.0.1/) == existing-service ]]
 printf '\n127.0.0.1 makar.frogville.fun\n' >> /etc/hosts
@@ -57,6 +61,6 @@ export NO_PROXY=127.0.0.1,localhost,makar.frogville.fun
 sleep .3
 bash /work/deploy/admin/setup-ladno.sh check --port 18080
 vhost_hash=$(sha256sum /etc/nginx/sites-available/ladno-makar.conf)
-if bash /work/deploy/admin/setup-ladno.sh proxy --dir /opt/ladno-test --port 18080 --cert /tmp/ladno-fixtures/fullchain.pem --key /tmp/ladno-fixtures/privkey.pem; then echo 'Duplicate vhost was unexpectedly accepted' >&2; exit 1; fi
+if bash /work/deploy/admin/setup-ladno.sh proxy --dir /opt/ladno-proxy-test --port 18080 --cert /tmp/ladno-fixtures/fullchain.pem --key /tmp/ladno-fixtures/privkey.pem; then echo 'Duplicate vhost was unexpectedly accepted' >&2; exit 1; fi
 [[ $(sha256sum /etc/nginx/sites-available/ladno-makar.conf) == "$vhost_hash" ]]
 printf '%s\n' 'Admin setup: pinned download, image command, real Nginx HTTPS, existing site and duplicate protection passed'

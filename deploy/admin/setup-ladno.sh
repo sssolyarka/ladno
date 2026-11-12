@@ -18,12 +18,14 @@ usage() {
 
   sudo bash setup-ladno.sh prepare [--dir /opt/ladno]
   sudo bash setup-ladno.sh build   [--dir /opt/ladno]
+  sudo bash setup-ladno.sh sources [--dir /opt/ladno]
   sudo bash setup-ladno.sh proxy   --port 18080 --upstream-host 127.0.0.1 \
     --cert /путь/fullchain.pem --key /путь/privkey.pem [--dir /opt/ladno]
   sudo bash setup-ladno.sh check   --port 18080 --upstream-host 127.0.0.1
 
 prepare  Скачать комплект 0.3.0, проверить закреплённый SHA-256, собрать образ.
 build    Повторить только сборку из уже подготовленных исходников.
+sources  Скачать только исходники для отдельной машины Nginx, без Docker.
 proxy    Проверить контейнер и сертификат, добавить новый сайт Nginx.
 check    Проверить, что HTTP allocation и HTTPS-домен ведут к одному серверу.
 
@@ -35,7 +37,7 @@ HELP
 }
 while (($#)); do
   case "$1" in
-    prepare|build|proxy|check) ladno_stage=$1; shift;;
+    prepare|build|sources|proxy|check) ladno_stage=$1; shift;;
     --dir) ladno_dir=${2:?Укажите каталог}; shift 2;;
     --port) ladno_port=${2:?Укажите порт}; shift 2;;
     --upstream-host) ladno_upstream=${2:?Укажите IPv4}; shift 2;;
@@ -85,10 +87,7 @@ build_image() {
   [[ -f $ladno_dir/deploy/pterodactyl/Dockerfile && -f $ladno_dir/server/pubspec.lock ]] || fail 'Нет подготовленных исходников. Сначала выполните prepare'
   bash "$ladno_dir/deploy/admin/build-image.sh"
 }
-case "$ladno_stage" in
-  prepare)
-    command -v docker >/dev/null || fail 'Сначала администратор должен настроить Docker/Wings'
-    docker info >/dev/null
+fetch_sources() {
     [[ ! -e $ladno_dir && ! -L $ladno_dir ]] || fail "Каталог $ladno_dir уже существует. Для повторной сборки используйте build; данные не перезаписываются"
     ladno_temp=$(mktemp -d /tmp/ladno-setup.XXXXXXXX)
     printf '%s\n' 'Загрузка проверенного комплекта Ладно 0.3.0…'
@@ -111,6 +110,12 @@ PY
     mkdir -p -- "$(dirname -- "$ladno_dir")"
     mkdir -- "$ladno_dir"
     cp -a -- "$ladno_temp/ladno-pterodactyl/." "$ladno_dir/"
+}
+case "$ladno_stage" in
+  prepare)
+    command -v docker >/dev/null || fail 'Сначала администратор должен настроить Docker/Wings'
+    docker info >/dev/null
+    fetch_sources
     build_image
     printf '\nОбраз готов. Дальше в административной панели:\n'
     printf '1. Импортировать EGG: %s/deploy/pterodactyl/egg-ladno.json\n' "$ladno_dir"
@@ -122,9 +127,13 @@ PY
   build)
     build_image
     ;;
+  sources)
+    fetch_sources
+    printf "Исходники для Nginx подготовлены в %s; Docker не требуется.\n" "$ladno_dir"
+    ;;
   proxy)
     for ladno_cmd in nginx systemctl; do command -v "$ladno_cmd" >/dev/null || fail "Нужен существующий $ladno_cmd"; done
-    [[ -f $ladno_dir/deploy/admin/configure-nginx.sh ]] || fail 'Сначала выполните prepare'
+    [[ -f $ladno_dir/deploy/admin/configure-nginx.sh ]] || fail 'Сначала выполните prepare на узле Wings или sources на машине Nginx'
     [[ -s $ladno_cert && -s $ladno_key ]] || fail 'Сертификат/ключ отсутствует или пуст'
     nginx -t
     ladno_existing_nginx=$(nginx -T 2>/dev/null)
