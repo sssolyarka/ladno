@@ -7,9 +7,8 @@ COPY server ./
 RUN dart compile exe bin/server.dart -o /app/ladno-server
 
 FROM docker.io/library/debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 ca-certificates && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 ca-certificates libstdc++6 && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 ladno && useradd -u 10001 -g ladno -M ladno && mkdir /data && chown ladno:ladno /data
-COPY --from=build /runtime/ /
 COPY --from=build /app/ladno-server /usr/local/bin/ladno-server
 USER 10001:10001
 ENV DATA_DIR=/data PORT=8080
