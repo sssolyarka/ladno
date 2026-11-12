@@ -5,6 +5,30 @@ import 'dart:convert';
 import 'package:ladno_backend/backend.dart';
 
 Future<void> main(List<String> args) async {
+  if (args.length == 1 && args.single == 'health') {
+    final http = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+    try {
+      await (() async {
+        final port = int.parse(
+          Platform.environment['PORT'] ??
+              Platform.environment['SERVER_PORT'] ??
+              '8080',
+        );
+        final request = await http.getUrl(
+          Uri.parse('http://127.0.0.1:$port/health'),
+        );
+        final response = await request.close();
+        if (response.statusCode != 200) exitCode = 1;
+        await response.drain<void>();
+      })().timeout(const Duration(seconds: 3));
+    } catch (_) {
+      exitCode = 1;
+    } finally {
+      http.close(force: true);
+    }
+    return;
+  }
+
   final backend = await Backend.open(
     Directory(Platform.environment['DATA_DIR'] ?? '/data'),
     maxOperations: int.parse(

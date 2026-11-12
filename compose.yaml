@@ -10,6 +10,12 @@ services:
     environment:
       MAX_OPERATIONS: ${MAX_OPERATIONS:-100000}
       MAX_STORAGE_BYTES: ${MAX_STORAGE_BYTES:-10737418240}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ladno-server", "health"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
     networks: [private]
     read_only: true
     tmpfs: [/tmp]
@@ -21,7 +27,9 @@ services:
   proxy:
     image: nginx:1.28-alpine
     restart: unless-stopped
-    depends_on: [backend]
+    depends_on:
+      backend:
+        condition: service_healthy
     ports: ["443:443"]
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
