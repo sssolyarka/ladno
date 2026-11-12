@@ -52,3 +52,8 @@ app.*.map.json
 .widget_preview/
 
 /dist/
+
+.env
+deploy/certs/
+
+/server/build/
