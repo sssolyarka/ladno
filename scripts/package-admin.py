@@ -10,6 +10,7 @@ for directory in ['deploy','server','packages/ladno_sync']:
         if path.is_file() and not any(part in {'.dart_tool','build','__pycache__'} for part in path.relative_to(root).parts):
             paths.append(path)
 paths.append(root/'.dockerignore')
+paths.append(root/'docs'/'DEEPSEEK.md')
 output=root/'dist'/'ladno-pterodactyl-admin.zip'
 output.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:
