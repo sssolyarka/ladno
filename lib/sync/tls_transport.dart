@@ -329,8 +329,13 @@ class TlsSyncServer {
 }
 
 class TlsSyncClient {
-  final TlsIdentity identity;
-  final PeerCertificate peer;
+  final TlsIdentity? identity;
+  final PeerCertificate? peer;
+  final String? _backendToken, _backendDeviceId, _backendServerId;
+  final SecurityContext? _backendContext;
+  bool get _backend => _backendToken != null;
+  String get _localId => _backendDeviceId ?? identity!.certificate.deviceId;
+  String get _remoteId => _backendServerId ?? peer!.deviceId;
   final Uri endpoint;
   final Duration timeout;
   final Set<HttpClient> _clients = {};
@@ -340,16 +345,47 @@ class TlsSyncClient {
     required this.peer,
     required this.endpoint,
     this.timeout = const Duration(seconds: 10),
-  }) {
+  }) : _backendToken = null,
+       _backendDeviceId = null,
+       _backendServerId = null,
+       _backendContext = null {
     if (endpoint.scheme != 'https' ||
         endpoint.host.isEmpty ||
         endpoint.userInfo.isNotEmpty ||
         (endpoint.path.isNotEmpty && endpoint.path != '/') ||
         endpoint.hasQuery ||
         endpoint.hasFragment ||
-        peer.deviceId == identity.certificate.deviceId) {
+        peer!.deviceId == identity!.certificate.deviceId) {
       throw const SyncProtocolException(
         'Нужен HTTPS-адрес другого доверенного устройства.',
+      );
+    }
+  }
+  TlsSyncClient.backend({
+    required this.endpoint,
+    required String token,
+    required String deviceId,
+    required String serverId,
+    SecurityContext? trustedContext,
+    this.timeout = const Duration(seconds: 15),
+  }) : identity = null,
+       peer = null,
+       _backendToken = token,
+       _backendDeviceId = deviceId,
+       _backendServerId = serverId,
+       _backendContext = trustedContext {
+    if (endpoint.scheme != 'https' ||
+        endpoint.host.isEmpty ||
+        endpoint.userInfo.isNotEmpty ||
+        (endpoint.path.isNotEmpty && endpoint.path != '/') ||
+        endpoint.hasQuery ||
+        endpoint.hasFragment ||
+        !validUuid(deviceId) ||
+        !validUuid(serverId) ||
+        deviceId == serverId ||
+        !RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(token)) {
+      throw const SyncProtocolException(
+        'Нужны HTTPS-адрес сервера и действующий токен устройства.',
       );
     }
   }
@@ -357,22 +393,34 @@ class TlsSyncClient {
     if (_cancelled) throw const SyncTransportException('cancelled');
     // Empty roots force exact pinning BEFORE any notes are sent, even for a
     // CA-signed server certificate. Never return true without this comparison.
-    final client = HttpClient(context: identity.createContext())
-      ..connectionTimeout = timeout
-      ..autoUncompress = false;
+    final client =
+        HttpClient(
+            context: _backend ? _backendContext : identity!.createContext(),
+          )
+          ..connectionTimeout = timeout
+          ..autoUncompress = false;
     client.findProxy = (_) => 'DIRECT';
-    client.badCertificateCallback = (cert, host, port) =>
-        host == endpoint.host && port == endpoint.port && peer.matches(cert);
+    if (!_backend) {
+      client.badCertificateCallback = (cert, host, port) =>
+          host == endpoint.host && port == endpoint.port && peer!.matches(cert);
+    }
     _clients.add(client);
     Future<Map<String, dynamic>> perform() async {
       final request = await client.postUrl(endpoint.replace(path: route));
       request.followRedirects = false;
       request.headers.contentType = ContentType.json;
-      request.headers.set(_deviceHeader, identity.certificate.deviceId);
+      request.headers.set(_deviceHeader, _localId);
+      if (_backend) {
+        request.headers.set(
+          HttpHeaders.authorizationHeader,
+          'Bearer $_backendToken',
+        );
+      }
       request.write(body);
       final response = await request.close();
-      if (response.certificate == null ||
-          !peer.matches(response.certificate!)) {
+      if (!_backend &&
+          (response.certificate == null ||
+              !peer!.matches(response.certificate!))) {
         throw const SyncTransportException('unauthorized');
       }
       if (response.statusCode != 200) {
@@ -385,7 +433,7 @@ class TlsSyncClient {
       );
       if (value is! Map<String, dynamic> ||
           value['protocol'] != syncProtocolVersion ||
-          value['deviceId'] != peer.deviceId) {
+          value['deviceId'] != _remoteId) {
         throw const SyncTransportException('invalid_response');
       }
       return value;
@@ -456,20 +504,20 @@ class TlsSyncClient {
     Replica local, {
     AttachmentCache? attachments,
   }) async {
-    if (local.deviceId != identity.certificate.deviceId) {
+    if (local.deviceId != _localId) {
       throw const SyncProtocolException('Идентификатор клиента не совпадает.');
     }
     for (var page = 0; page < 1000; page++) {
-      final batch = await local.outgoing(peer.deviceId);
+      final batch = await local.outgoing(_remoteId);
       if (batch.operations.isEmpty) break;
-      await local.acknowledge(peer.deviceId, await push(batch));
+      await local.acknowledge(_remoteId, await push(batch));
       if (page == 999) throw const SyncTransportException('session_limit');
     }
     var ack = <String>[];
     for (var page = 0; page < 1000; page++) {
       final batch = await pull(ack);
       if (batch.operations.isEmpty) break;
-      ack = await local.receive(batch, fromPeer: peer.deviceId);
+      ack = await local.receive(batch, fromPeer: _remoteId);
       if (page == 999) throw const SyncTransportException('session_limit');
     }
     final referenced = await local.referencedAttachments();

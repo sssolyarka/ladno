@@ -1,0 +1,52 @@
+{
+  "_comment": "Ладно: личный бэкенд. Образ собирает администратор на узле Wings.",
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "exported_at": "2026-11-12T00:00:00+03:00",
+  "name": "Ладно — Backend",
+  "author": "ladno@example.invalid",
+  "description": "Личный сервер заметок и задач. HTTP на allocation-порту; HTTPS через существующий Nginx. Данные: /home/container/data. Консоль: help, invite, devices, revoke UUID, stop. Требуется собственный образ из deploy/pterodactyl/Dockerfile.",
+  "features": null,
+  "docker_images": {
+    "Debian 13 — Ladno": "ladno-backend:pterodactyl"
+  },
+  "file_denylist": [],
+  "startup": "/usr/local/bin/ladno-server",
+  "config": {
+    "files": "{}",
+    "startup": "{\"done\": \"Ladno backend listening\"}",
+    "logs": "{}",
+    "stop": "stop"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/bash\nset -eu\nmkdir -p /mnt/server/data\nprintf \"%s\\n\" \"Ladno data directory ready; application is included in the custom image.\"\n",
+      "container": "ghcr.io/pterodactyl/installers:debian",
+      "entrypoint": "bash"
+    }
+  },
+  "variables": [
+    {
+      "name": "Лимит операций",
+      "description": "Максимум операций журнала, включая историю и отметки удаления.",
+      "env_variable": "MAX_OPERATIONS",
+      "default_value": "100000",
+      "user_viewable": true,
+      "user_editable": false,
+      "rules": "required|integer|min:1000|max:1000000",
+      "field_type": "text"
+    },
+    {
+      "name": "Лимит вложений, байт",
+      "description": "Суммарный лимит размеров файлов, на которые ссылается журнал. Диск панели дополнительно ограничивает весь каталог данных.",
+      "env_variable": "MAX_STORAGE_BYTES",
+      "default_value": "10737418240",
+      "user_viewable": true,
+      "user_editable": false,
+      "rules": "required|integer|min:104857600|max:1099511627776",
+      "field_type": "text"
+    }
+  ]
+}

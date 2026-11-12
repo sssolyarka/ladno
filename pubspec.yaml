@@ -1,12 +1,14 @@
 name: ladno
 description: "Ладно — личные заметки без облака. Этап 3: задачи и проекты."
 publish_to: 'none'
-version: 0.3.0-dev.1+4
+version: 0.3.0-dev.2+5
 
 environment:
   sdk: ^3.13.7
 
 dependencies:
+  ladno_sync:
+    path: packages/ladno_sync
   flutter:
     sdk: flutter
   flutter_localizations:

@@ -3,7 +3,7 @@ name: Проверки приложения
 on:
   pull_request:
   push:
-    branches: ['codex/stage-2-sync', 'codex/stage-3-tasks']
+    branches: ['codex/stage-2-sync', 'codex/stage-3-tasks', 'codex/docker-backend']
 
 permissions:
   contents: read

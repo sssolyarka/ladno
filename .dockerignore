@@ -1,0 +1,16 @@
+.git
+.tooling
+.dart_tool
+build
+dist
+artifacts
+.env
+*.jks
+*.keystore
+**/key.properties
+**/*.sqlite
+**/*.pem
+**/*.key
+**/local.properties
+server/.dart_tool
+server/build

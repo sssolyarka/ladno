@@ -1,0 +1,39 @@
+name: Docker backend
+on:
+  pull_request:
+  push:
+    branches: ['codex/docker-backend']
+permissions:
+  contents: read
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Prepare test HTTPS certificate
+        run: |
+          mkdir -p /tmp/ladno-ci-certs
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost -addext basicConstraints=critical,CA:TRUE -keyout /tmp/ladno-ci-certs/privkey.pem -out /tmp/ladno-ci-certs/fullchain.pem
+          echo TLS_CERT_DIR=/tmp/ladno-ci-certs > .env
+      - name: Build and start Compose
+        run: docker compose up -d --build
+      - name: Check Nginx configuration
+        run: docker compose exec -T proxy nginx -t
+      - name: Test verified HTTPS, persistent data and device access
+        run: python3 scripts/smoke-backend.py /tmp/ladno-ci-certs/fullchain.pem
+      - name: Build Pterodactyl image
+        run: docker build -f deploy/pterodactyl/Dockerfile -t ladno-backend:pterodactyl .
+      - name: Test allocation, console and persistence
+        run: python3 scripts/smoke-pterodactyl.py
+      - name: Stop Pterodactyl fixture
+        if: always()
+        run: |
+          docker rm -f ladno-ptero-test || true
+          docker volume rm ladno-ptero-test || true
+      - name: Stop test deployment
+        if: always()
+        run: docker compose down -v

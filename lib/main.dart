@@ -16,10 +16,10 @@ import 'widgets/task_board.dart';
 import 'widgets/reminder_settings.dart';
 import 'planning/reminders.dart';
 import 'widgets/conflict_dialog.dart';
-import 'widgets/sync_settings.dart';
+import 'widgets/backend_settings.dart';
 import 'widgets/folder_conflicts.dart';
 import 'widgets/attachment_panel.dart';
-import 'sync/controller.dart';
+import 'sync/backend_controller.dart';
 import 'data/backup_archive.dart';
 
 Future<void> main() async {
@@ -157,7 +157,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   Future<void> writes = Future.value();
   double sidebarWidth = 236, listWidth = 326;
   int loadToken = 0, editGeneration = 0, planningRevision = 0;
-  late final SyncController sync;
+  late final BackendSyncController sync;
   late final ReminderService reminders;
   bool get trash => section == 'Корзина';
   bool get noteSection => ['Заметки', 'Корзина', 'Поиск'].contains(section);
@@ -180,7 +180,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    sync = SyncController(
+    sync = BackendSyncController(
       store,
       onDataChanged: () => unawaited(refreshRemote()),
     );
@@ -527,7 +527,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
           return;
         }
         await store.localBackup(prefix: 'before-restore');
-        final oldVault = sync.vault;
+        final oldConnectionKey = store.replica.deviceId;
         await sync.pause();
         try {
           await store.restoreArchive(input);
@@ -536,18 +536,16 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
           await sync.resume();
           rethrow;
         }
-        if (oldVault != null) {
-          try {
-            await oldVault.destroy();
-          } on Object {
-            /* remains protected, never reused */
-          }
+        try {
+          await sync.secrets.delete('ladno.backend.$oldConnectionKey');
+        } catch (_) {
+          // The old protected item is never reused by the restored origin.
         }
-        sync.vault = null;
+        sync.connection = null;
         sync.enabled = false;
         sync.active = true;
-        sync.status = 'Данные восстановлены. Подключите устройства заново.';
-        await store.setSetting('sync.enabled', 'false');
+        sync.status = 'Данные восстановлены. Подключите сервер заново.';
+        await store.setSetting('backend.enabled', 'false');
         if (!mounted) return;
         setState(() {
           selected = null;
@@ -1360,7 +1358,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         'Связывайте только свои устройства. Сверяйте код на обоих экранах.',
       ),
       const SizedBox(height: 12),
-      SyncSettings(sync: sync),
+      BackendSettings(sync: sync),
       ReminderSettings(service: reminders),
       FolderConflicts(
         store: store,
