@@ -7,7 +7,7 @@ from pathlib import Path
 source = sys.argv[1]
 if not re.fullmatch(r'[0-9a-f]{40}', source):
     raise SystemExit('Invalid source commit')
-paths = ['lib', 'android', 'windows', 'assets', 'pubspec.yaml', 'pubspec.lock',
+paths = ['lib', 'packages', 'android', 'windows', 'assets', 'pubspec.yaml', 'pubspec.lock',
          'packaging/windows', 'scripts/configure-android-signing.py']
 subprocess.run(['git', 'diff', '--exit-code', source, 'HEAD', '--', *paths], check=True)
 old = subprocess.check_output(['git', 'show', f'{source}:.github/workflows/release.yml'], text=True)

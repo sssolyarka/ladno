@@ -225,4 +225,52 @@ void main() {
       expect(response['httpStatus'], 403);
     },
   );
+  test('Откат серверной копии с recover возвращает подтверждённые поздние изменения', () async {
+    final first = await join(a);
+    final note = await a.createNote();
+    note.title = 'До копии';
+    await a.save(note);
+    await client(first).synchronize(a.replica);
+    await server.close();
+    final database = File('${root.path}/server/replica.sqlite');
+    final snapshot = await database.readAsBytes();
+    await start();
+    final edited = (await a.notes()).single;
+    edited.title = 'После копии';
+    await a.save(edited);
+    await client(first).synchronize(a.replica);
+    expect((await a.replica.outgoing(first.serverId)).operations, isEmpty);
+    await server.close();
+    await database.writeAsBytes(snapshot, flush: true);
+    final restored = await Backend.open(Directory('${root.path}/server'));
+    await restored.recoverIdentity();
+    await restored.close();
+    await start();
+    final fresh = await join(a);
+    expect(fresh.serverId, isNot(first.serverId));
+    await client(fresh).synchronize(a.replica);
+    final second = await join(b);
+    await client(second).synchronize(b.replica);
+    expect((await b.notes()).single.title, 'После копии');
+    await expectLater(
+      client(first).synchronize(a.replica),
+      throwsA(isA<SyncTransportException>()),
+    );
+  });
+  test('Повтор пакета подтверждается и на границе квоты журнала', () async {
+    await server.close();
+    server = await Backend.open(
+      Directory('${root.path}/server'),
+      maxOperations: 1,
+    );
+    await server.listen(port: 0, tls: tls);
+    endpoint = Uri.parse('https://localhost:${server.port}');
+    final who = await join(a);
+    await a.createNote();
+    final batch = await a.replica.outgoing(who.serverId);
+    expect(batch.operations.length, 1);
+    expect(await client(who).push(batch), [batch.operations.single.id]);
+    expect(await client(who).push(batch), [batch.operations.single.id]);
+    expect(await server.replica.operationCount(), 1);
+  });
 }
