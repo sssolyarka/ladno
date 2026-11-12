@@ -29,6 +29,13 @@ jobs:
         run: docker build -f deploy/pterodactyl/Dockerfile -t ladno-backend:pterodactyl .
       - name: Test allocation, console and persistence
         run: python3 scripts/smoke-pterodactyl.py
+      - name: Failure diagnostics
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail 60
+          docker inspect --format '{{.State.OOMKilled}}' "$(docker compose ps -aq proxy)" || true
+          docker logs --tail 30 ladno-ptero-test 2>&1 | sed -E 's/(invite \(10 minutes\): )[^ ]+/\1[redacted]/g' || true
       - name: Stop Pterodactyl fixture
         if: always()
         run: |
