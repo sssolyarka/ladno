@@ -53,6 +53,11 @@ class NativeReminders implements ReminderBackend {
       },
     );
     if (result == false) throw StateError('Notification initialization failed');
+    final launch = await plugin.getNotificationAppLaunchDetails();
+    if (launch?.didNotificationLaunchApp == true) {
+      final taskId = launch?.notificationResponse?.payload;
+      if (taskId != null) onOpen?.call(taskId);
+    }
   }
 
   @override
