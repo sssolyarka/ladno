@@ -17,6 +17,7 @@ import 'widgets/reminder_settings.dart';
 import 'planning/reminders.dart';
 import 'widgets/conflict_dialog.dart';
 import 'widgets/backend_settings.dart';
+import 'widgets/deepseek_panel.dart';
 import 'widgets/folder_conflicts.dart';
 import 'widgets/attachment_panel.dart';
 import 'sync/backend_controller.dart';
@@ -1368,14 +1369,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         },
       ),
       const SizedBox(height: 28),
-      const Text(
-        'DeepSeek · Не подключено',
-        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-      ),
-      const SizedBox(height: 8),
-      const Text(
-        'ИИ не отправляет данные и не выполняет запросы. Подготовлена только граница будущего модуля.',
-      ),
+      DeepSeekPanel(sync: sync),
       const SizedBox(height: 28),
       const Text(
         'Ладно · этап 3 — в разработке',

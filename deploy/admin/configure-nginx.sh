@@ -39,7 +39,7 @@ server {
         proxy_pass http://$upstream:$port;
         proxy_set_header Host \$host;
         proxy_connect_timeout 5s;
-        proxy_read_timeout 30s;
+        proxy_read_timeout 75s;
         proxy_send_timeout 15s;
     }
 }
